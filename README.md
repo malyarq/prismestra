@@ -18,7 +18,7 @@
 
 Prismestra is a local lighting orchestrator for Windows. Its goal is to bring PC RGB, unusual Bluetooth lights, LCD displays and home lighting into one spatial scene, with explicit device support and a small resident engine.
 
-**Source preview.** The scene engine, native editor and OpenRGB/WLED/Home Assistant setup paths are implemented and have software tests. Home Assistant tokens use Windows Credential Manager. Hardware acceptance, enabling native control from an ordinary GUI launch, and keeping the engine alive after closing the editor are still in progress. See the [compatibility table](docs/compatibility.md) before choosing a device.
+**Source preview.** The scene engine, native editor and OpenRGB/WLED/Home Assistant setup paths are implemented and have software tests. Home Assistant tokens use Windows Credential Manager. A resident session keeps lighting and sensor subscriptions alive when the editor closes. The [local integration record](docs/validation/windows-local-kit.json) covers transport checks on one PC kit; visible-device acceptance, interactive tray checks and paired resource measurements remain pending. See the [compatibility table](docs/compatibility.md) before choosing a device.
 
 ## What it does
 
@@ -32,6 +32,8 @@ Prismestra does not control fans or pumps. Keep your existing cooling software. 
 
 ## Build and run
 
+Packaged Windows x64 builds require the x64 Visual C++ v14 runtime. Get it from [Microsoft's supported runtime downloads](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist#latest-supported-redistributable-version) if needed; it is not bundled.
+
 Install a current stable [Rust toolchain](https://www.rust-lang.org/tools/install) with the Windows MSVC build tools, then:
 
 ```powershell
@@ -44,6 +46,8 @@ cargo build --release --locked --bin pc-control-ui
 The internal crate and executable still use `pc-control` and `pc-control-ui`. The product name is **Prismestra**.
 
 First launch opens a preview. Set up and inspect a supported connection before applying it. When using an external backend, configure its server separately; Prismestra does not install or silently take over another controller.
+
+Closing the editor leaves the session in the tray. Its menu can reopen the editor, stop outputs or exit. Starting again with the same settings directory shows a tray hint and prevents a duplicate runtime.
 
 ## Compatibility is a testable claim
 

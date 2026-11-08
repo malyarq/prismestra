@@ -738,7 +738,9 @@ pub(super) fn exercise(state: &State) -> Result<(), String> {
                 input: "resident-input".into(),
             },
         });
-        a.runtime.request_outputs_for(doc, plan.clone())?;
+        a.runtime
+            .request_outputs_for(doc, plan.clone())
+            .map_err(|e| format!("Resident configuration 0: {e}"))?;
         (
             original,
             prior_plan,
@@ -806,10 +808,10 @@ pub(super) fn exercise(state: &State) -> Result<(), String> {
             rgb_id,
         )
     };
-    for _ in 0..2 {
-        close_editor(state)?;
+    for (msg, w) in [(WM_SYSCOMMAND, SC_CLOSE as usize), (WM_CLOSE, 0)] {
+        unsafe { SendMessageW(state.editor_window.get(), msg, w, 0) };
         if !state.editor_window.get().is_null() {
-            return Err("Close retained editor HWND".into());
+            return Err(format!("System close {msg:#x}/{w:#x} retained editor HWND"));
         }
         if crate::runtime::output::Lease::acquire(vec!["resident-ui-fixture:rgb".into()]).is_ok() {
             return Err("Editor close released the active RGB endpoint lease".into());
@@ -872,7 +874,10 @@ pub(super) fn exercise(state: &State) -> Result<(), String> {
             60
         };
         let next_plan = a.runtime.output_plan();
-        let revision = a.runtime.request_outputs_for(next, next_plan)?;
+        let revision = a
+            .runtime
+            .request_outputs_for(next, next_plan)
+            .map_err(|e| format!("Resident configuration 1: {e}"))?;
         a.was_pending = true;
         revision
     };
@@ -936,7 +941,12 @@ pub(super) fn exercise(state: &State) -> Result<(), String> {
             return Err("Restored App did not receive queued power intent".into());
         }
         settle(state, "queued-simulated-resume", |a| {
-            a.runtime.outputs_ready() == Ok(true)
+            // Workers may become Ready before the owner completes its power transition.
+            a.runtime.read(|r| {
+                r.temperature_input_ready()
+                    && !r.pending_configuration()
+                    && r.outputs_ready() == Ok(true)
+            })
         })?;
     }
     {
@@ -944,7 +954,9 @@ pub(super) fn exercise(state: &State) -> Result<(), String> {
         let a = slot.as_mut().unwrap();
         let doc = a.runtime.document().clone();
         let outputs = a.runtime.output_plan();
-        a.runtime.request_outputs_for(doc, outputs)?;
+        a.runtime
+            .request_outputs_for(doc, outputs)
+            .map_err(|e| format!("Resident configuration 2: {e}"))?;
         a.was_pending = true;
     }
     close_editor(state)?;
@@ -978,7 +990,9 @@ pub(super) fn exercise(state: &State) -> Result<(), String> {
         let mut slot = state.app.borrow_mut();
         let a = slot.as_mut().unwrap();
         let doc = a.runtime.document().clone();
-        a.runtime.request_outputs_for(doc, plan.clone())?;
+        a.runtime
+            .request_outputs_for(doc, plan.clone())
+            .map_err(|e| format!("Resident configuration 0: {e}"))?;
     }
     settle(state, "restart-before-failed-stop", |a| {
         !a.runtime.pending_configuration() && a.runtime.outputs_ready() == Ok(true)
@@ -1074,7 +1088,7 @@ pub(super) fn exercise(state: &State) -> Result<(), String> {
     state.tray_enabled.set(false);
     state.resident.set(false);
     eprintln!(
-        "Resident session stand PASS: owned hidden top-level shell, editor destroy/reopen twice, same Runtime/output revision/Registry, one shared reader, live software RGB while editor absent, queued shell power under active borrow and absent App, Stop drain, failed Stop persistence then Exit upgrade/drain/quit; no tray icon, native hardware or OS power operations"
+        "Resident session stand PASS: owned hidden top-level shell, SC_CLOSE and WM_CLOSE editor destroy/reopen, same Runtime/output revision/Registry, one shared reader, live software RGB while editor absent, queued shell power under active borrow and absent App, Stop drain, failed Stop persistence then Exit upgrade/drain/quit; no tray icon, native hardware or OS power operations"
     );
     Ok(())
 }

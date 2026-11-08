@@ -26,3 +26,5 @@ Apache-2.0-only dependencies cannot be combined into this GPL-2.0-only distribut
 To rebuild from the source archive, install the recorded compiler/toolchain and Windows build tools, then run `cargo build --release --locked --offline --target x86_64-pc-windows-msvc --bin pc-control-ui` inside `prismestra-source`. This records reproducible inputs and commands; byte-identical executable output across machines has not been established.
 
 Before publishing, test the packaged executable with a clean state directory, verify its checksum, and complete the applicable editor, engine lifecycle, device and resource checks. Passing software CI does not certify physical devices. Never package credentials or private hardware bindings. Release artifacts must match the tested final commit.
+
+The MSVC binary dynamically imports `VCRUNTIME140.dll`. The launch notes point to [Microsoft's supported x64 Visual C++ v14 runtime](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist#latest-supported-redistributable-version); the runtime installer is not bundled. Execution on a clean Windows installation without development tools remains a separate acceptance check.

@@ -2695,7 +2695,11 @@ unsafe fn dispatch(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
                     Err(e) => Err(e),
                 }
             }
-            _ => return unsafe { DefWindowProcW(hwnd, msg, w, l) },
+            _ => {
+                // Default handling can synchronously reenter dispatch (e.g. SC_CLOSE).
+                drop(slot);
+                return unsafe { DefWindowProcW(hwnd, msg, w, l) };
+            }
         };
         if let Err(e) = result {
             a.status = e;
