@@ -13,6 +13,84 @@ pub struct Wled {
     next: Option<Instant>,
     rgb: Vec<u8>,
 }
+
+pub struct OpenRgb {
+    session: crate::transport::openrgb::OpenRgbSession,
+    leds: usize,
+    rgb: Vec<[u8; 3]>,
+    next: Option<Instant>,
+}
+impl OpenRgb {
+    pub fn connect(
+        endpoint: SocketAddr,
+        identity: &str,
+        topology: &str,
+        leds: usize,
+        cancel: &Cancellation,
+    ) -> Result<Self, String> {
+        use crate::{devices::openrgb as metadata, transport::openrgb::OpenRgbSession};
+        let deadline = || Instant::now() + Duration::from_secs(3);
+        let cancelled = || cancel.cancelled();
+        let mut session = OpenRgbSession::connect(endpoint, deadline(), &cancelled)?;
+        let inventory = session.scan(deadline(), &cancelled)?;
+        let mut matching = inventory
+            .iter()
+            .filter(|c| metadata::identity(c) == identity);
+        let controller = matching
+            .next()
+            .ok_or("OpenRGB controller identity is no longer available; rediscover before Apply")?;
+        if matching.next().is_some() {
+            return Err("OpenRGB controller identity is ambiguous; no output activated".into());
+        }
+        if controller.kind.eq_ignore_ascii_case("virtual") {
+            return Err("OpenRGB virtual controllers cannot own physical lighting outputs".into());
+        }
+        if controller.leds != leds || metadata::topology(controller) != topology {
+            return Err(format!(
+                "OpenRGB topology changed ({} LEDs); update device/map and rediscover before Apply",
+                controller.leds
+            ));
+        }
+        session.open_output(controller, deadline(), &cancelled)?;
+        Ok(Self {
+            session,
+            leds,
+            rgb: vec![[0; 3]; leds],
+            next: None,
+        })
+    }
+}
+impl RgbDriver for OpenRgb {
+    fn protocol(&self) -> Driver {
+        Driver::OpenRgb
+    }
+    fn leds(&self) -> usize {
+        self.leds
+    }
+    fn write(&mut self, colors: &[Rgb], cancel: &Cancellation) -> Result<WriteResult, String> {
+        if cancel.cancelled() {
+            return Err("OpenRGB output stopping".into());
+        }
+        if colors.len() != self.leds {
+            return Err("OpenRGB requires the complete controller frame".into());
+        }
+        let now = Instant::now();
+        if let Some(next) = self.next
+            && next > now
+        {
+            return Ok(WriteResult::Deferred(next - now));
+        }
+        for (color, rgb) in colors.iter().zip(&mut self.rgb) {
+            *rgb = [color.r, color.g, color.b];
+        }
+        self.session
+            .submit(&self.rgb, now + Duration::from_secs(3), &|| {
+                cancel.cancelled()
+            })?;
+        self.next = Some(Instant::now() + Duration::from_micros(16_667));
+        Ok(WriteResult::Submitted)
+    }
+}
 impl Wled {
     /// Opens only the explicitly selected UDP endpoint; does not probe the LAN.
     pub fn connect(endpoint: SocketAddr, leds: usize) -> Result<Self, String> {

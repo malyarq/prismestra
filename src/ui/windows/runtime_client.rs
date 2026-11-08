@@ -244,7 +244,7 @@ impl Client {
     command!(set_scene(scene: crate::runtime::scene::Scene) -> ());
     command!(configure_schedule(config: crate::schedule::Config) -> ());
     command!(request_document_at(document: Document, path: PathBuf) -> ());
-    command!(request_outputs(plan: OutputPlan) -> u64);
+    command!(request_outputs_for(document: Document, plan: OutputPlan) -> u64);
     command!(relocate_journal(path: PathBuf) -> ());
     command!(retry_configuration()->());
     command!(cancel_configuration()->());

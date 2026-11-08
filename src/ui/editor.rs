@@ -192,10 +192,14 @@ impl Editor {
                 "rate",
                 "Частота",
                 d.rate_hz,
-                if matches!(d.driver, crate::devices::Driver::WledDdp) {
-                    "WLED: 1..60 Гц; максимум 1 МБ RGB/с на выход"
-                } else {
-                    "1..144 Гц"
+                match d.driver {
+                    crate::devices::Driver::WledDdp => {
+                        "WLED: 1..60 Гц; максимум 1 МБ RGB/с на выход"
+                    }
+                    crate::devices::Driver::OpenRgb => {
+                        "OpenRGB: 1..60 Гц; предел зависит от контроллера"
+                    }
+                    _ => "1..144 Гц",
                 },
             ),
             group,
@@ -203,7 +207,9 @@ impl Editor {
         ];
         if matches!(
             d.driver,
-            crate::devices::Driver::SkydimoSerial { .. } | crate::devices::Driver::WledDdp
+            crate::devices::Driver::SkydimoSerial { .. }
+                | crate::devices::Driver::WledDdp
+                | crate::devices::Driver::OpenRgb
         ) {
             let mut role = field(
                 "role",
@@ -513,7 +519,9 @@ impl Editor {
             "role" => {
                 if !matches!(
                     d.driver,
-                    crate::devices::Driver::SkydimoSerial { .. } | crate::devices::Driver::WledDdp
+                    crate::devices::Driver::SkydimoSerial { .. }
+                        | crate::devices::Driver::WledDdp
+                        | crate::devices::Driver::OpenRgb
                 ) {
                     return Err("Для этого семейства нельзя сменить назначение".into());
                 }

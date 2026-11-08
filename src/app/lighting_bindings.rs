@@ -16,6 +16,15 @@ pub struct Draft {
 impl Draft {
     pub fn from_binding(binding: &Binding) -> Self {
         match binding {
+            Binding::OpenRgb {
+                endpoint,
+                identity,
+                topology,
+            } => Self {
+                endpoint: endpoint.to_string(),
+                identity: identity.clone(),
+                serial: topology.clone(),
+            },
             Binding::WledDdp { endpoint } => Self {
                 endpoint: endpoint.to_string(),
                 ..Self::default()
@@ -58,6 +67,15 @@ impl Draft {
         }
         let endpoint = self.endpoint.trim().to_owned();
         let binding = match device.driver {
+            Driver::OpenRgb => Binding::OpenRgb {
+                endpoint: crate::devices::canonical_endpoint(
+                    endpoint
+                        .parse()
+                        .map_err(|_| "Введите IP:порт сервера OpenRGB, обычно 127.0.0.1:6742")?,
+                ),
+                identity: self.identity.trim().into(),
+                topology: self.serial.trim().into(),
+            },
             Driver::WledDdp => Binding::WledDdp {
                 endpoint: crate::devices::canonical_endpoint(
                     endpoint

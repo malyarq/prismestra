@@ -7,7 +7,8 @@ use crate::app::lighting_bindings::{
 #[path = "connections_stand.rs"]
 mod stand;
 pub(super) fn exercise(hwnd: HWND, state: &State) -> Result<(), String> {
-    stand::exercise(hwnd, state)
+    stand::exercise(hwnd, state)?;
+    stand::exercise_openrgb(state)
 }
 pub(super) fn snapshot_scan(state: &State) -> Result<(), String> {
     stand::snapshot_scan(state)
@@ -47,6 +48,7 @@ struct Activation {
     native: bool,
 }
 struct Previous {
+    document: Document,
     plan: crate::app::runtime::OutputPlan,
     local: Option<crate::app::lighting_outputs::Local>,
 }
@@ -72,6 +74,8 @@ pub(super) struct Editor {
     targets: Vec<BindingTarget>,
     selected: usize,
     inventory: Option<discovery::Inventory>,
+    scan_endpoint: Option<String>,
+    controllers: BTreeMap<String, crate::transport::openrgb::ControllerInfo>,
     edited: bool,
     removed: bool,
     syncing: bool,
@@ -90,6 +94,8 @@ impl Editor {
             targets: vec![],
             selected: 0,
             inventory: None,
+            scan_endpoint: None,
+            controllers: BTreeMap::new(),
             edited: false,
             removed: false,
             syncing: false,
@@ -116,7 +122,7 @@ impl Editor {
     }
     fn scannable(&self) -> bool {
         matches!(self.current(), Some(BindingTarget::Monitor(_)))
-            || matches!(self.current(),Some(BindingTarget::Device(d)) if matches!(d.driver,crate::devices::Driver::Fusion2{..}|crate::devices::Driver::Valkyrie{..}|crate::devices::Driver::TtLcd|crate::devices::Driver::SkydimoSerial{..}))
+            || matches!(self.current(),Some(BindingTarget::Device(d)) if matches!(d.driver,crate::devices::Driver::OpenRgb|crate::devices::Driver::Fusion2{..}|crate::devices::Driver::Valkyrie{..}|crate::devices::Driver::TtLcd|crate::devices::Driver::SkydimoSerial{..}))
     }
     fn dirty(&self) -> bool {
         self.edited || self.workspace.as_ref().is_some_and(|w| w.dirty)
@@ -338,6 +344,7 @@ impl App {
         let label = match self.connections.current() {
             Some(BindingTarget::Monitor(_)) => r"Экран Windows (например, \\.\DISPLAY1)",
             Some(BindingTarget::Device(d)) => match d.driver {
+                crate::devices::Driver::OpenRgb => "SDK-сервер OpenRGB (127.0.0.1:6742)",
                 crate::devices::Driver::WledDdp => "IP:порт WLED DDP (обычно 4048)",
                 crate::devices::Driver::DoorBle => "MAC Bluetooth-контроллера",
                 crate::devices::Driver::EneDram => "Проверенный модуль PawnIO",
@@ -385,6 +392,9 @@ impl App {
         } else {
             let hint = match self.connections.current() {
                 Some(BindingTarget::Device(d)) => match d.driver {
+                    crate::devices::Driver::OpenRgb => {
+                        "Поиск читает SDK; «Применить» включает Direct."
+                    }
                     crate::devices::Driver::WledDdp => {
                         "IP:4048 и число LED из WLED. UDP не подтверждает свечение."
                     }
@@ -562,7 +572,35 @@ impl App {
                     .factory
                     .clone()
                     .ok_or("Аппаратный поиск в этом снимке отключён.")?;
+                let network = matches!(&target,BindingTarget::Device(d) if d.driver==crate::devices::Driver::OpenRgb);
+                let factory = if network
+                    && self
+                        .connections
+                        .activation
+                        .as_ref()
+                        .is_some_and(|a| a.native)
+                {
+                    let endpoint = self.text(ENDPOINT);
+                    let endpoint = if endpoint.trim().is_empty() {
+                        "127.0.0.1:6742"
+                    } else {
+                        endpoint.trim()
+                    };
+                    let endpoint = crate::devices::canonical_endpoint(
+                        endpoint
+                            .parse()
+                            .map_err(|_| "Введите IP:порт SDK-сервера OpenRGB")?,
+                    );
+                    self.connections.scan_endpoint = Some(self.text(ENDPOINT));
+                    discovery::openrgb_factory(endpoint)
+                } else {
+                    self.connections.scan_endpoint = None;
+                    factory
+                };
                 self.connections.scan.start(target, factory)?;
+                if network {
+                    self.connections.edited = false;
+                }
                 self.connections.inventory = None;
                 unsafe {
                     SendMessageW(self.h(LIST), LB_RESETCONTENT, 0, 0);
@@ -585,8 +623,16 @@ impl App {
                             .ok()
                             .and_then(|i| v.candidates.get(i))
                     })
-                    .map(|c| c.draft.clone())
+                    .cloned()
                     .ok_or("Результат поиска не выбран")?;
+                if let Some(controller) = &draft.controller
+                    && let Some(BindingTarget::Device(device)) = self.connections.current().cloned()
+                {
+                    self.connections
+                        .controllers
+                        .insert(device.id, controller.clone());
+                }
+                let draft = draft.draft;
                 self.connections.syncing = true;
                 self.set_text(ENDPOINT, &draft.endpoint);
                 self.set_text(IDENTITY, &draft.identity);
@@ -694,26 +740,38 @@ impl App {
             .activation
             .as_ref()
             .ok_or("Применение к устройствам в этом снимке отключено")?;
-        let (plan, local) = if revert {
+        let (document, plan, local) = if revert {
             let old = self
                 .connections
                 .previous
                 .as_ref()
                 .ok_or("Нет предыдущего подключения")?;
-            (old.plan.clone(), old.local.clone())
+            (old.document.clone(), old.plan.clone(), old.local.clone())
         } else {
-            let local = crate::app::lighting_outputs::Local::read(
-                &self.connections.path,
-                self.runtime.document(),
-            )?;
-            let plan = (activation.factory)(&local, self.runtime.document(), &self.asset_root)?;
-            (plan, activation.native.then_some(local))
+            let mut document = self.runtime.document().clone();
+            let local =
+                crate::app::lighting_outputs::Local::read_draft(&self.connections.path, &document)?;
+            for (id, binding) in &local.devices {
+                if let crate::devices::Binding::OpenRgb {
+                    identity, topology, ..
+                } = binding
+                    && let Some(controller) = self.connections.controllers.get(id)
+                    && &crate::devices::openrgb::identity(controller) == identity
+                    && &crate::devices::openrgb::topology(controller) == topology
+                {
+                    document = crate::app::device_setup::adopt_openrgb(&document, id, controller)?;
+                }
+            }
+            local.validate(&document)?;
+            let plan = (activation.factory)(&local, &document, &self.asset_root)?;
+            (document, plan, activation.native.then_some(local))
         };
         let previous = Previous {
+            document: self.runtime.document().clone(),
             plan: self.runtime.output_plan(),
             local: self.native_lighting.clone(),
         };
-        let revision = self.runtime.request_outputs(plan)?;
+        let revision = self.runtime.request_outputs_for(document, plan)?;
         self.connections.pending = Some(Pending {
             reverting: revert,
             revision,
@@ -744,6 +802,11 @@ impl App {
             }
             let pending = self.connections.pending.take().unwrap();
             if self.runtime.output_revision() == pending.revision {
+                if self.runtime.document() != &pending.previous.document {
+                    self.dirty = true;
+                    self.context_revision = self.context_revision.wrapping_add(1);
+                    self.reset_editor(0);
+                }
                 self.native_lighting = pending.local;
                 self.connections.previous = if pending.reverting {
                     None
@@ -825,7 +888,13 @@ impl App {
         let Some((target, result)) = self.connections.scan.poll() else {
             return false;
         };
-        if self.connections.current() != Some(&target) {
+        if self
+            .connections
+            .scan_endpoint
+            .take()
+            .is_some_and(|endpoint| endpoint != self.text(ENDPOINT))
+            || self.connections.current() != Some(&target)
+        {
             return false;
         }
         match result {
@@ -857,6 +926,19 @@ impl App {
 pub(super) fn stand_factory() -> discovery::Factory {
     std::sync::Arc::new(|target, _| {
         let mut inventory = discovery::Inventory::empty(target.clone());
+        if matches!(&target,BindingTarget::Device(d) if d.driver==crate::devices::Driver::OpenRgb) {
+            let controller = stand::openrgb_controller();
+            inventory.candidates.push(discovery::Candidate {
+                controller: Some(controller.clone()),
+                label: "Программный OpenRGB · 3 LED · не оборудование".into(),
+                draft: Draft {
+                    endpoint: "127.0.0.1:6742".into(),
+                    identity: crate::devices::openrgb::identity(&controller),
+                    serial: crate::devices::openrgb::topology(&controller),
+                },
+            });
+            return Ok(inventory);
+        }
         let draft = match &target {
             BindingTarget::Device(d)
                 if matches!(d.driver, crate::devices::Driver::Fusion2 { .. }) =>
@@ -876,6 +958,7 @@ pub(super) fn stand_factory() -> discovery::Factory {
         };
         if let Some(draft) = draft {
             inventory.candidates.push(discovery::Candidate {
+                controller: None,
                 label: "Программный пример · не обнаруженное оборудование".into(),
                 draft,
             });
