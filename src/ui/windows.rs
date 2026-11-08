@@ -1,4 +1,4 @@
-//! Native UI. Hardware lighting requires an explicit private-bindings launch option.
+//! Native editor and persistent session. Hardware activation is an explicit user action.
 use super::{CONTENT_LEFT, MIN_HEIGHT, MIN_WIDTH, Page, View, paint::Painter, right_panel};
 use crate::{
     app::{
@@ -12,7 +12,7 @@ use crate::{
     schedule::{self, Target},
 };
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::BTreeMap,
     ffi::OsString,
     fs::File,
@@ -20,6 +20,7 @@ use std::{
     mem::size_of,
     path::{Path, PathBuf},
     ptr::{null, null_mut},
+    rc::Rc,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use windows_sys::Win32::{
@@ -36,6 +37,7 @@ use windows_sys::Win32::{
 };
 const TBM_GETPOS: u32 = WM_USER;
 mod connections;
+mod resident;
 mod runtime_client;
 mod sources;
 use runtime_client::Client;
@@ -772,7 +774,11 @@ impl App {
         Ok(())
     }
     fn h(&self, id: i32) -> HWND {
-        self.widgets[&id]
+        if self.widgets.is_empty() {
+            null_mut()
+        } else {
+            self.widgets[&id]
+        }
     }
     fn add(&self, id: i32, text: &str) {
         unsafe {
@@ -1023,17 +1029,24 @@ impl App {
     }
 
     fn request_close(&mut self) {
-        if let Err(error) = self.guard_connections_close() {
+        if !self.widgets.is_empty()
+            && let Err(error) = self.guard_connections_close()
+        {
             self.status = error;
             self.show_page();
             return;
         }
-        if let Err(error) = self.guard_sources_exit() {
+        if !self.widgets.is_empty()
+            && let Err(error) = self.guard_sources_exit()
+        {
             self.status = error;
             self.show_page();
             return;
         }
 
+        self.begin_shutdown();
+    }
+    fn begin_shutdown(&mut self) {
         self.sources.release_lighting();
         self.connections.scan.cancel();
         self.sources.scan.cancel();
@@ -1996,6 +2009,9 @@ impl App {
             self.set_check(DOOR_ON, groups[1]);
             changed = true;
         }
+        if self.widgets.is_empty() {
+            return Ok(changed);
+        }
         if self.page == Page::Lcd
             && let Some(entry) = self
                 .runtime
@@ -2121,6 +2137,12 @@ fn parse_time(s: &str) -> Result<u16, String> {
 struct State {
     app: RefCell<Option<App>>,
     snapshot: bool,
+    resident: Cell<bool>,
+    editor_window: Rc<Cell<HWND>>,
+    shell_window: Cell<HWND>,
+    session_action: Cell<resident::Action>,
+    tray_enabled: Cell<bool>,
+    pending_power: Cell<resident::PowerIntent>,
 }
 fn dialog(hwnd: HWND, save: bool) -> Result<Option<PathBuf>, String> {
     profile_dialog(hwnd, save, false)
@@ -2425,19 +2447,51 @@ unsafe fn dispatch(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
     }
     let state = unsafe { &*raw };
     if msg == WM_NCDESTROY {
+        if state.editor_window.get() == hwnd {
+            state.editor_window.set(null_mut());
+        }
         unsafe {
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
         }
         return unsafe { DefWindowProcW(hwnd, msg, w, l) };
     }
+    // The editor can exist briefly before its permanent shell has been created.
+    if msg == WM_POWERBROADCAST && state.resident.get() && state.shell_window.get().is_null() {
+        if matches!(w as u32, PBT_APMSUSPEND | PBT_APMRESUMEAUTOMATIC)
+            && let Err(error) = resident::power_message(state, w as u32 == PBT_APMSUSPEND)
+        {
+            resident::report(state, error);
+        }
+        return 1;
+    }
     if msg == WM_DESTROY {
+        if let Ok(mut slot) = state.app.try_borrow_mut()
+            && let Some(app) = slot.as_mut()
+        {
+            app.widgets.clear();
+            app.buffer = None;
+            app.lcd_image = vec![];
+            app.ambient_image = vec![];
+            app.lcd_frame = (0, 0);
+            app.ambient_frame = (0, 0);
+        }
         unsafe {
             KillTimer(hwnd, 1);
-            PostQuitMessage(0);
+            if !state.resident.get() {
+                PostQuitMessage(0);
+            }
         }
         return 0;
     }
     if msg == WM_CLOSE {
+        if state.resident.get() {
+            if state.session_action.get() == resident::Action::None
+                && let Err(error) = resident::close_editor(state)
+            {
+                resident::report(state, error);
+            }
+            return 0;
+        }
         let active = match state.app.try_borrow() {
             Ok(slot) => slot.as_ref().is_some_and(|a| a.shutdown.active()),
             Err(_) => return 0,
@@ -2584,7 +2638,7 @@ unsafe fn dispatch(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
             WM_HSCROLL => a.slider(l as HWND),
             WM_TIMER => match a.tick() {
                 Ok(changed) => {
-                    if a.close_ready() {
+                    if !state.resident.get() && a.close_ready() {
                         unsafe {
                             PostMessageW(hwnd, WM_CLOSE, 0, 0);
                         }
@@ -2599,7 +2653,8 @@ unsafe fn dispatch(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
                 Err(e) => Err(e),
             },
             WM_POWERBROADCAST => {
-                if !a.shutdown.active()
+                if !state.resident.get()
+                    && !a.shutdown.active()
                     && (w as u32 == PBT_APMSUSPEND || w as u32 == PBT_APMRESUMEAUTOMATIC)
                 {
                     a.runtime
@@ -2655,12 +2710,13 @@ unsafe fn dispatch(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
     unsafe { DefWindowProcW(hwnd, msg, w, l) }
 }
 
-struct Window(HWND);
+struct Window(Rc<Cell<HWND>>);
 impl Drop for Window {
     fn drop(&mut self) {
-        if unsafe { IsWindow(self.0) } != 0 {
+        let hwnd = self.0.get();
+        if !hwnd.is_null() && unsafe { IsWindow(hwnd) } != 0 {
             unsafe {
-                DestroyWindow(self.0);
+                DestroyWindow(hwnd);
             }
         }
     }
@@ -2685,9 +2741,18 @@ fn native_sources_allowed(snapshot: bool, selftest: bool) -> bool {
     !snapshot && !selftest
 }
 fn run_inner(args: Vec<OsString>) -> Result<(), String> {
-    let o = options(args)?;
+    let mut o = options(args)?;
     let state_dir = if let Some(path) = &o.state_dir {
         path.clone()
+    } else if o.selftest || o.snapshot.is_some() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "prismestra-diagnostic-{}-{stamp}",
+            std::process::id()
+        ))
     } else {
         std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
@@ -2701,6 +2766,15 @@ fn run_inner(args: Vec<OsString>) -> Result<(), String> {
         state_dir
     };
     std::fs::create_dir_all(&state_dir).map_err(|e| e.to_string())?;
+    if o.selftest && o.snapshot.is_none() {
+        o.snapshot = Some(state_dir.join("diagnostics/selftest.png"));
+    }
+    let resident_mode = o.snapshot.is_none() && !o.selftest;
+    let _single_instance = if resident_mode {
+        Some(resident::Instance::acquire(&state_dir)?)
+    } else {
+        None
+    };
     // This process setting does not change Windows display resolution or other apps.
     if unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) } == 0 {
         return Err(last("Enable sharp per-monitor native UI"));
@@ -2748,6 +2822,12 @@ fn run_inner(args: Vec<OsString>) -> Result<(), String> {
     let state = Box::new(State {
         app: RefCell::new(None),
         snapshot: o.snapshot.is_some(),
+        resident: Cell::new(resident_mode),
+        editor_window: Rc::new(Cell::new(null_mut())),
+        shell_window: Cell::new(null_mut()),
+        session_action: Cell::new(resident::Action::None),
+        tray_enabled: Cell::new(false),
+        pending_power: Cell::new(resident::PowerIntent::default()),
     });
     let instance = unsafe { GetModuleHandleW(null()) };
     let class = wide(CLASS);
@@ -2805,7 +2885,8 @@ fn run_inner(args: Vec<OsString>) -> Result<(), String> {
     if raw.is_null() {
         return Err(last("Create preview window"));
     }
-    let window = Window(raw);
+    state.editor_window.set(raw);
+    let window = Window(state.editor_window.clone());
     let mut app = App {
         connections: connections::Editor::new(
             o.native_lighting
@@ -2879,6 +2960,11 @@ fn run_inner(args: Vec<OsString>) -> Result<(), String> {
     // are destroyed, including a control-construction failure.
     state.app.replace(Some(app));
     built?;
+    let _shell = if resident_mode {
+        Some(resident::Shell::create(&state, true)?)
+    } else {
+        None
+    };
     let mut client = RECT::default();
     unsafe {
         GetClientRect(raw, &mut client);
@@ -2915,6 +3001,7 @@ fn run_inner(args: Vec<OsString>) -> Result<(), String> {
         if o.selftest {
             selftest(raw, &state)?;
         }
+        let raw = state.editor_window.get();
         {
             let mut slot = state.app.borrow_mut();
             let app = slot.as_mut().unwrap();
@@ -3064,11 +3151,12 @@ fn run_inner(args: Vec<OsString>) -> Result<(), String> {
                 .is_some_and(|a| msg.hwnd == a.h(E_VALUE));
         if value_enter {
             unsafe {
-                SendMessageW(raw, WM_COMMAND, E_SET as usize, 0);
+                SendMessageW(state.editor_window.get(), WM_COMMAND, E_SET as usize, 0);
             }
             continue;
         }
-        if unsafe { IsDialogMessageW(raw, &msg) } == 0 {
+        let editor = state.editor_window.get();
+        if editor.is_null() || unsafe { IsDialogMessageW(editor, &msg) } == 0 {
             unsafe {
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
@@ -3270,6 +3358,7 @@ fn selftest(hwnd: HWND, state: &State) -> Result<(), String> {
     if original_page == Page::Connections {
         connections::snapshot_scan(state)?;
     }
+    resident::exercise(state)?;
     Ok(())
 }
 

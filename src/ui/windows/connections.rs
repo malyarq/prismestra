@@ -122,6 +122,11 @@ impl Editor {
         }
         self
     }
+    pub(super) fn stopped(&mut self) {
+        self.pending = None;
+        self.previous = None;
+        self.watch_outputs = false;
+    }
     fn current(&self) -> Option<&BindingTarget> {
         self.targets.get(self.selected)
     }
@@ -414,7 +419,7 @@ impl App {
         self.connections_layout(self.width, self.height);
         self.show_page();
     }
-    fn refresh_connections(&self) {
+    pub(super) fn refresh_connections(&self) {
         self.set_text(PATH, &self.connections.path.to_string_lossy());
         let n = self.connections.workspace.as_ref().map_or(0, |w| {
             w.orphan_ids(self.runtime.document()).len()
@@ -1114,4 +1119,18 @@ pub(super) fn stand_factory() -> discovery::Factory {
         }
         Ok(inventory)
     })
+}
+
+#[cfg(test)]
+mod activation_tests {
+    use super::*;
+    #[test]
+    fn normal_ui_can_explicitly_apply_native_bindings_but_diagnostics_cannot() {
+        let normal = Editor::new(PathBuf::from("unused.json"), None).activation(false, false);
+        assert!(normal.activation.as_ref().is_some_and(|a| a.native));
+        let snapshot = Editor::new(PathBuf::from("unused.json"), None).activation(true, false);
+        assert!(snapshot.activation.is_none());
+        let stand = Editor::new(PathBuf::from("unused.json"), None).activation(true, true);
+        assert!(stand.activation.as_ref().is_some_and(|a| !a.native));
+    }
 }
