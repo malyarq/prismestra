@@ -1,7 +1,6 @@
 //! Implements the readable and writable traits for core/std types.
 
 mod array;
-mod flags;
 mod json;
 mod primitive;
 mod slice;
