@@ -115,7 +115,12 @@ fn shared_endpoint(
         .lock()
         .map_err(|_| "FanControl endpoint pool poisoned")?;
     pool.retain(|_, endpoint| endpoint.strong_count() > 0);
-    let key = (pipe.to_ascii_lowercase(), server);
+    // Match Target::canonical_key without changing the Policy used for verification.
+    let server_key = server
+        .to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase();
+    let key = (pipe.to_ascii_lowercase(), PathBuf::from(server_key));
     if let Some(existing) = pool.get(&key).and_then(Weak::upgrade) {
         return Ok(existing);
     }
@@ -426,30 +431,63 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_pool_never_shares_between_different_server_policies() {
+    fn endpoint_case_aliases_share_one_blocked_query_but_different_servers_do_not() {
         let pool = Mutex::new(HashMap::new());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let fetch_calls = calls.clone();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
         let first = shared_endpoint(
             &pool,
-            "Pipe",
-            PathBuf::from("first.exe"),
-            Box::new(|| Ok(vec![])),
+            r"\\.\pipe\FanControl",
+            PathBuf::from(r"C:\Tools\FanControl.exe"),
+            Box::new(move || {
+                fetch_calls.fetch_add(1, Ordering::SeqCst);
+                started_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+                Ok(vec![reading("cpu", 42.), reading("gpu", 52.)])
+            }),
         )
         .unwrap();
         let same = shared_endpoint(
             &pool,
-            "pipe",
-            PathBuf::from("first.exe"),
+            r"\\.\pipe\FANCONTROL",
+            PathBuf::from("c:/TOOLS/fancontrol.exe"),
             Box::new(|| panic!("reused endpoint performed second RPC")),
         )
         .unwrap();
         let different = shared_endpoint(
             &pool,
-            "pipe",
-            PathBuf::from("other.exe"),
+            r"\\.\pipe\FanControl",
+            PathBuf::from(r"C:\Other\FanControl.exe"),
             Box::new(|| Ok(vec![])),
         )
         .unwrap();
         assert!(Arc::ptr_eq(&first, &same));
         assert!(!Arc::ptr_eq(&first, &different));
+        let mut cpu = Cached {
+            sensor_id: "cpu".into(),
+            cancel: Cancellation::default(),
+            shared: first,
+        };
+        let cpu = std::thread::spawn(move || cpu.poll(1000));
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let mut gpu = Cached {
+            sensor_id: "gpu".into(),
+            cancel: Cancellation::default(),
+            shared: same,
+        };
+        let gpu = std::thread::spawn(move || gpu.poll(1001));
+        assert!(!cpu.is_finished());
+        release_tx.send(()).unwrap();
+        assert_eq!(cpu.join().unwrap().unwrap().unwrap().celsius, 42.);
+        assert_eq!(
+            gpu.join().unwrap().unwrap().unwrap(),
+            Reading {
+                celsius: 52.,
+                observed_ms: 1000
+            }
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }
