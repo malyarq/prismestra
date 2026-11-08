@@ -64,6 +64,8 @@ pub struct Ticket {
 }
 pub enum WriteResult {
     Submitted,
+    /// The last accepted value is unchanged; no transport request was sent.
+    Unchanged,
     Deferred(Duration),
 }
 pub trait RgbDriver {
@@ -337,6 +339,7 @@ where
                 state.snapshot.submitted = state.snapshot.submitted.saturating_add(1);
                 state.snapshot.last_submitted = Some(frame.ticket);
             }
+            WriteResult::Unchanged => {}
             WriteResult::Deferred(delay) => {
                 if delay.is_zero() || delay > Duration::from_secs(30) {
                     return Err("Invalid RGB driver retry delay".into());
@@ -382,6 +385,44 @@ mod tests {
         fn drop(&mut self) {
             self.dropped.store(true, Ordering::Release);
         }
+    }
+    #[test]
+    fn unchanged_value_consumes_frame_without_claiming_transport_submission() {
+        struct Noop(mpsc::Sender<()>);
+        impl RgbDriver for Noop {
+            fn protocol(&self) -> Driver {
+                Driver::HomeAssistant
+            }
+            fn leds(&self) -> usize {
+                1
+            }
+            fn write(&mut self, _: &[Rgb], _: &Cancellation) -> Result<WriteResult, String> {
+                self.0.send(()).unwrap();
+                Ok(WriteResult::Unchanged)
+            }
+        }
+        let (sent, received) = mpsc::channel();
+        let mut output = Output::start(Driver::HomeAssistant, 1, 1, move |_| {
+            Ok(Box::new(Noop(sent)))
+        })
+        .unwrap();
+        output
+            .submit(
+                Ticket {
+                    generation: 1,
+                    sequence: 1,
+                },
+                &[Rgb::default()],
+            )
+            .unwrap();
+        received.recv_timeout(Duration::from_secs(2)).unwrap();
+        output.stop();
+        output.join();
+        let state = output.snapshot();
+        assert_eq!(state.phase, Phase::Stopped);
+        assert_eq!(state.submitted, 0);
+        assert_eq!(state.last_submitted, None);
+        assert_eq!(state.deferred, 0);
     }
     #[test]
     fn endpoint_ownership_outlives_dropped_host_handle() {

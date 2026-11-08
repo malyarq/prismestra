@@ -6,6 +6,87 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(windows)]
+pub struct HomeAssistant {
+    client: crate::transport::home_assistant::Client,
+    last: Option<[u8; 3]>,
+    next: Option<Instant>,
+}
+#[cfg(windows)]
+impl HomeAssistant {
+    pub fn connect(
+        endpoint: &str,
+        entity: &str,
+        credential_id: &str,
+        cancel: &Cancellation,
+    ) -> Result<Self, String> {
+        use crate::devices::home_assistant as metadata;
+        if !metadata::valid_entity(entity) || metadata::credential_id(endpoint)? != credential_id {
+            return Err("Invalid Home Assistant binding".into());
+        }
+        if cancel.cancelled() {
+            return Err("Home Assistant output stopping".into());
+        }
+        let token = crate::credentials_windows::read(credential_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("Home Assistant key is missing; save it before Apply")?;
+        Self::with_token(endpoint, entity, token, cancel)
+    }
+    fn with_token(
+        endpoint: &str,
+        entity: &str,
+        token: String,
+        cancel: &Cancellation,
+    ) -> Result<Self, String> {
+        use crate::transport::home_assistant::{Client, Endpoint};
+        let mut client = Client::new(Endpoint::parse(endpoint).map_err(|e| e.to_string())?, token)
+            .map_err(|e| e.to_string())?;
+        client
+            .bind_light(entity, Instant::now() + Duration::from_secs(3), || {
+                cancel.cancelled()
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(Self {
+            client,
+            last: None,
+            next: None,
+        })
+    }
+}
+#[cfg(windows)]
+impl RgbDriver for HomeAssistant {
+    fn protocol(&self) -> Driver {
+        Driver::HomeAssistant
+    }
+    fn leds(&self) -> usize {
+        1
+    }
+    fn write(&mut self, colors: &[Rgb], cancel: &Cancellation) -> Result<WriteResult, String> {
+        if cancel.cancelled() {
+            return Err("Home Assistant output stopping".into());
+        }
+        let [color] = colors else {
+            return Err("Home Assistant requires one whole-light color".into());
+        };
+        let rgb = [color.r, color.g, color.b];
+        if self.last == Some(rgb) {
+            return Ok(WriteResult::Unchanged);
+        }
+        let now = Instant::now();
+        if let Some(next) = self.next
+            && next > now
+        {
+            return Ok(WriteResult::Deferred(next - now));
+        }
+        self.client
+            .set_color(rgb, now + Duration::from_secs(3), || cancel.cancelled())
+            .map_err(|e| e.to_string())?;
+        self.last = Some(rgb);
+        self.next = Some(Instant::now() + Duration::from_secs(1));
+        Ok(WriteResult::Submitted)
+    }
+}
+
 pub struct Wled {
     client: wled::Client,
     leds: usize,
@@ -173,3 +254,7 @@ mod tests {
         assert!(receiver.recv(&mut packet).is_err());
     }
 }
+
+#[cfg(all(test, windows))]
+#[path = "network_ha_tests.rs"]
+mod ha_tests;

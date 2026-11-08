@@ -259,3 +259,33 @@ fn virtual_controllers_are_excluded_even_if_a_private_binding_is_forged() {
             .all(|c| c.1 != 1101 && c.1 != 1050)
     );
 }
+
+#[test]
+fn identical_physical_identity_on_two_server_addresses_is_rejected_before_factory() {
+    use pc_control::devices::{Bindings, validate_bindings};
+    let mut doc = document();
+    let mut second = doc.lighting.setup.devices[0].clone();
+    second.id = "second".into();
+    doc.lighting.setup.devices.push(second);
+    doc.lighting.setup.canvas.points.push(Point {
+        device: "second".into(),
+        led: 0,
+        x: 1,
+        y: 0,
+    });
+    let binding = |endpoint: &str| Binding::OpenRgb {
+        endpoint: endpoint.parse().unwrap(),
+        identity: "a".repeat(64),
+        topology: "b".repeat(64),
+    };
+    let bindings: Bindings = [
+        ("rgb".into(), binding("127.0.0.1:6742")),
+        ("second".into(), binding("192.168.1.10:6742")),
+    ]
+    .into();
+    assert!(validate_bindings(&doc.lighting.setup, &bindings).is_err());
+    assert!(
+        pc_control::runtime::native::bound_factory(&doc.lighting.setup, "second", &bindings, 15)
+            .is_err()
+    );
+}

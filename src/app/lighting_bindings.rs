@@ -16,6 +16,15 @@ pub struct Draft {
 impl Draft {
     pub fn from_binding(binding: &Binding) -> Self {
         match binding {
+            Binding::HomeAssistant {
+                endpoint,
+                entity,
+                credential_id,
+            } => Self {
+                endpoint: endpoint.clone(),
+                identity: entity.clone(),
+                serial: credential_id.clone(),
+            },
             Binding::OpenRgb {
                 endpoint,
                 identity,
@@ -67,6 +76,11 @@ impl Draft {
         }
         let endpoint = self.endpoint.trim().to_owned();
         let binding = match device.driver {
+            Driver::HomeAssistant => Binding::HomeAssistant {
+                endpoint: crate::devices::home_assistant::canonical_endpoint(&endpoint)?,
+                entity: self.identity.trim().into(),
+                credential_id: self.serial.clone(),
+            },
             Driver::OpenRgb => Binding::OpenRgb {
                 endpoint: crate::devices::canonical_endpoint(
                     endpoint

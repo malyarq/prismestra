@@ -153,6 +153,73 @@ impl Drop for Worker {
 pub fn native_factory() -> Factory {
     Arc::new(native)
 }
+/// Read-only entity inventory using an explicitly saved local credential.
+#[cfg(windows)]
+pub fn home_assistant_factory(endpoint: String, token: String) -> Result<Factory, String> {
+    use crate::{
+        devices::home_assistant as metadata,
+        transport::home_assistant::{Client, Endpoint},
+    };
+    let endpoint = metadata::canonical_endpoint(&endpoint)?;
+    let credential = metadata::credential_id(&endpoint)?;
+    // Validate credentials without issuing a request. Errors contain no token.
+    Client::new(
+        Endpoint::parse(&endpoint).map_err(|e| e.to_string())?,
+        token.clone(),
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(Arc::new(move |target, cancel| {
+        if !matches!(&target, Target::Device(d) if d.driver==Driver::HomeAssistant) {
+            return Err("Home Assistant discovery target changed".into());
+        }
+        let client = Client::new(
+            Endpoint::parse(&endpoint).map_err(|e| e.to_string())?,
+            token.clone(),
+        )
+        .map_err(|e| e.to_string())?;
+        let lights = client
+            .lights(
+                std::time::Instant::now() + std::time::Duration::from_secs(3),
+                || cancel.cancelled(),
+            )
+            .map_err(|e| e.to_string())?;
+        let mut inventory = Inventory::empty(target);
+        if lights.len() > 128 {
+            inventory
+                .issues
+                .push("Показаны первые 128 светильников.".into());
+        }
+        for light in lights.into_iter().take(128) {
+            if !metadata::valid_entity(&light.entity_id) {
+                continue;
+            }
+            let name = light
+                .name
+                .unwrap_or_else(|| light.entity_id.clone())
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(100)
+                .collect::<String>();
+            let modes = light
+                .supported_color_modes
+                .join(", ")
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(100)
+                .collect::<String>();
+            inventory.candidates.push(Candidate {
+                controller: None,
+                label: format!("{name} · {} · {modes}", light.entity_id),
+                draft: Draft {
+                    endpoint: endpoint.clone(),
+                    identity: light.entity_id,
+                    serial: credential.clone(),
+                },
+            });
+        }
+        Ok(inventory)
+    }))
+}
 /// Explicit SDK metadata only. The server address is local preferences, never portable geometry.
 pub fn openrgb_factory(endpoint: std::net::SocketAddr) -> Factory {
     Arc::new(move |target, cancel| {
@@ -268,6 +335,7 @@ fn native(target: Target, cancel: Cancellation) -> Result<Inventory, String> {
                     }
                     out.issues.push("Порты не открывались. Модель и HEX ID контроллера требуют отдельной проверки; CH340 не означает Skydimo.".into());
                 }
+                Driver::HomeAssistant=>out.issues.push("Укажите адрес Home Assistant и сохраните ключ, затем найдите светильники.".into()),
                 Driver::OpenRgb=>out.issues.push("Укажите SDK-сервер OpenRGB и выполните отдельный read-only поиск контроллеров.".into()),
                 Driver::WledDdp=>out.issues.push("WLED: укажите известный IP и порт DDP (обычно 4048). Автопоиск не отправляет команды; UDP-передача не подтверждает физический вывод.".into()),
                 Driver::DoorBle=>out.issues.push("Автопоиск BLE пока не реализован. Введите MAC известного совместимого контроллера; подключение не выполняется при сохранении.".into()),

@@ -49,6 +49,21 @@ pub fn bound_factory(
     let keys = binding.endpoint_keys();
     let factory: Factory = match (device.driver, binding) {
         (
+            Driver::HomeAssistant,
+            Binding::HomeAssistant {
+                endpoint,
+                entity,
+                credential_id,
+            },
+        ) => Arc::new(move |cancel| {
+            Ok(Box::new(super::network::HomeAssistant::connect(
+                &endpoint,
+                &entity,
+                &credential_id,
+                &cancel,
+            )?))
+        }),
+        (
             Driver::OpenRgb,
             Binding::OpenRgb {
                 endpoint,

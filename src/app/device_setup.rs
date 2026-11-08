@@ -27,6 +27,7 @@ pub enum Layout {
 }
 #[derive(Clone, Copy, Debug)]
 enum Family {
+    HomeAssistant,
     OpenRgb,
     Wled,
     Door,
@@ -45,6 +46,12 @@ pub struct Preset {
 }
 // Counts are the existing protocol capability tables, not discovered hardware.
 static BASE_PRESETS: &[Preset] = &[
+    Preset {
+        id: "home-assistant-light",
+        label: "Home Assistant · свет",
+        family: Family::HomeAssistant,
+        leds: 1,
+    },
     Preset {
         id: "openrgb-controller",
         label: "OpenRGB · whole controller",
@@ -137,6 +144,7 @@ impl Preset {
             return Err("Этот шаблон имеет фиксированное число LED".into());
         }
         let driver = match self.family {
+            Family::HomeAssistant => Driver::HomeAssistant,
             Family::OpenRgb => Driver::OpenRgb,
             Family::Wled => Driver::WledDdp,
             Family::Door => Driver::DoorBle,
@@ -160,7 +168,11 @@ impl Preset {
             },
             driver,
             leds,
-            rate_hz: 25,
+            rate_hz: if matches!(self.family, Family::HomeAssistant) {
+                1
+            } else {
+                25
+            },
             enabled: false,
         };
         d.validate()?;

@@ -13,3 +13,6 @@ pub mod sensors;
 pub mod storage;
 pub mod transport;
 pub mod ui;
+
+#[cfg(windows)]
+pub mod credentials_windows;

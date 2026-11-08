@@ -193,6 +193,9 @@ impl Editor {
                 "Частота",
                 d.rate_hz,
                 match d.driver {
+                    crate::devices::Driver::HomeAssistant => {
+                        "Home Assistant: один светильник, 1 Гц"
+                    }
                     crate::devices::Driver::WledDdp => {
                         "WLED: 1..60 Гц; максимум 1 МБ RGB/с на выход"
                     }
@@ -210,6 +213,7 @@ impl Editor {
             crate::devices::Driver::SkydimoSerial { .. }
                 | crate::devices::Driver::WledDdp
                 | crate::devices::Driver::OpenRgb
+                | crate::devices::Driver::HomeAssistant
         ) {
             let mut role = field(
                 "role",
