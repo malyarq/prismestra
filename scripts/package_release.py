@@ -77,6 +77,15 @@ def notice_files(root):
     return sorted(path for path in paths if path.is_file())
 
 
+def check_build_paths(executable, source):
+    data = executable.read_bytes().lower()
+    for directory in (source, Path.home()):
+        for marker in (str(directory), str(directory).replace("\\", "/")):
+            for encoding in ("utf-8", "utf-16-le"):
+                if marker.encode(encoding).lower() in data:
+                    raise ValueError("Executable contains a build-host path; fix embedded paths before distribution")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--expected-commit", required=True)
@@ -121,6 +130,7 @@ def main():
     binary.mkdir(parents=True)
     executable = binary / "Prismestra.exe"
     shutil.copy2(build / target / "release" / "pc-control-ui.exe", executable)
+    check_build_paths(executable, source)
     shutil.copy2(source / "LICENSE", binary / "LICENSE")
     notices = binary / "licenses"
     for package in metadata["packages"]:

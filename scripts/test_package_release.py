@@ -70,6 +70,17 @@ class PackageChecks(unittest.TestCase):
             self.assertEqual([p.relative_to(root).as_posix() for p in release.notice_files(root)],
                              ["AUTHORS", "LICENSES/MIT.txt"])
 
+    def test_embedded_build_paths_block_distribution_in_both_encodings(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "source"
+            executable = Path(temporary) / "app.exe"
+            for encoding in ("utf-8", "utf-16-le"):
+                executable.write_bytes(b"MZ" + str(source).encode(encoding))
+                with self.assertRaisesRegex(ValueError, "build-host path"):
+                    release.check_build_paths(executable, source)
+            executable.write_bytes(b"MZopaque executable data")
+            release.check_build_paths(executable, source)
+
 
 if __name__ == "__main__":
     unittest.main()
