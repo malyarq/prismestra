@@ -126,7 +126,9 @@ impl<'a> ReceivedMessage<'a> {
     /// If there's a `[len, [..data]]` format, use `read_value::<Vec<T>>()` instead.
     pub fn read_n_values<T: DeserFromBuf>(&mut self, n: usize) -> OpenRgbResult<Vec<T>> {
         if n > 8192 || n > self.available_buf().len() {
-            return Err(OpenRgbError::ProtocolError("OpenRGB collection exceeds bounded input".into()));
+            return Err(OpenRgbError::ProtocolError(
+                "OpenRGB collection exceeds bounded input".into(),
+            ));
         }
         let mut values = Vec::with_capacity(n);
         for _ in 0..n {

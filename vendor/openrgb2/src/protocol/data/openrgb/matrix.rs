@@ -10,11 +10,17 @@ pub struct MatrixMapData {
 }
 impl MatrixMapData {
     /// Matrix width in cells.
-    pub fn width(&self) -> u32 { self.width }
+    pub fn width(&self) -> u32 {
+        self.width
+    }
     /// Matrix height in cells.
-    pub fn height(&self) -> u32 { self.height }
+    pub fn height(&self) -> u32 {
+        self.height
+    }
     /// Zone-local LED indices in row-major order; u32::MAX marks a hole.
-    pub fn indices(&self) -> &[u32] { &self.data }
+    pub fn indices(&self) -> &[u32] {
+        &self.data
+    }
 }
 impl SerToBuf for Option<MatrixMapData> {
     fn serialize(&self, buf: &mut crate::WriteMessage) -> crate::OpenRgbResult<()> {
@@ -41,11 +47,15 @@ impl DeserFromBuf for Option<MatrixMapData> {
             return Ok(None);
         }
         if len < 8 || (len - 8) % 4 != 0 {
-            return Err(crate::OpenRgbError::ProtocolError("OpenRGB matrix byte length is invalid".into()));
+            return Err(crate::OpenRgbError::ProtocolError(
+                "OpenRGB matrix byte length is invalid".into(),
+            ));
         }
         let matrix = buf.read_value::<MatrixMapData>()?;
         if matrix.indices().len() * 4 + 8 != len as usize {
-            return Err(crate::OpenRgbError::ProtocolError("OpenRGB matrix byte length does not match dimensions".into()));
+            return Err(crate::OpenRgbError::ProtocolError(
+                "OpenRGB matrix byte length does not match dimensions".into(),
+            ));
         }
         Ok(Some(matrix))
     }
@@ -64,7 +74,8 @@ impl DeserFromBuf for MatrixMapData {
     fn deserialize(buf: &mut ReceivedMessage<'_>) -> crate::OpenRgbResult<Self> {
         let height = buf.read_value()?;
         let width = buf.read_value()?;
-        let count = (height as usize).checked_mul(width as usize)
+        let count = (height as usize)
+            .checked_mul(width as usize)
             .ok_or_else(|| crate::OpenRgbError::ProtocolError("OpenRGB matrix overflow".into()))?;
         let data = buf.read_n_values(count)?;
 

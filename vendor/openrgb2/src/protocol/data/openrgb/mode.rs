@@ -1,9 +1,9 @@
 use flagset::{FlagSet, flags};
 
+use crate::ReceivedMessage;
 use crate::data::ProtocolOption;
 use crate::protocol::{DeserFromBuf, SerToBuf, WriteMessage};
 use crate::{OpenRgbResult, protocol::data::Color};
-use crate::ReceivedMessage;
 
 flags! {
     /// RGB controller mode flags.

@@ -32,7 +32,9 @@ impl<'de> DeserBorrowed<'de> for &'de str {
     {
         let len = buf.read_value::<u16>()? as usize;
         if len > 4096 {
-            return Err(OpenRgbError::ProtocolError("OpenRGB string exceeds 4096 bytes".into()));
+            return Err(OpenRgbError::ProtocolError(
+                "OpenRGB string exceeds 4096 bytes".into(),
+            ));
         }
         if len == 0 {
             return Err(OpenRgbError::ProtocolError(

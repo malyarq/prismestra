@@ -11,7 +11,9 @@ impl<T: DeserFromBuf> DeserFromBuf for Vec<T> {
         let len = buf.read_value::<u16>()? as usize;
         log_serde!("Reading Vec<{:?}> of length {len}", type_name::<T>());
         if len > 8192 || len > buf.available_buf().len() {
-            return Err(crate::OpenRgbError::ProtocolError("OpenRGB vector exceeds bounded input".into()));
+            return Err(crate::OpenRgbError::ProtocolError(
+                "OpenRGB vector exceeds bounded input".into(),
+            ));
         }
         let mut vec = Vec::with_capacity(len);
         for _ in 0..len {

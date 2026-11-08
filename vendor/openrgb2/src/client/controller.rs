@@ -133,9 +133,15 @@ impl Controller {
 
     /// Sets this controller to a controllable mode.
     pub async fn set_controllable_mode(&self) -> OpenRgbResult<()> {
-        let mode = self.data.modes().iter()
+        let mode = self
+            .data
+            .modes()
+            .iter()
             .map(|m| ControllerMode::new(m, false))
-            .find(|m| m.kind() == ControllerModeKind::Direct && !m.flags().contains(ModeFlag::AutomaticSave))
+            .find(|m| {
+                m.kind() == ControllerModeKind::Direct
+                    && !m.flags().contains(ModeFlag::AutomaticSave)
+            })
             .ok_or_else(|| OpenRgbError::ProtocolError("No controllable mode found".to_owned()))?;
 
         // Send exactly one mode update, preserving the chosen brightness.

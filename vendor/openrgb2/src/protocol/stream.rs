@@ -253,7 +253,9 @@ impl ProtocolStream {
         // This reads directly from the stream as opposed to other deserialisation
         let packet = RecvPacket::read(&mut self.stream).await?;
         if packet.header.packet_id == PacketId::DeviceListUpdated {
-            return Err(ProtocolError("OpenRGB inventory changed; discard session and rebind".into()));
+            return Err(ProtocolError(
+                "OpenRGB inventory changed; discard session and rebind".into(),
+            ));
         }
         Ok(packet)
     }
@@ -310,7 +312,10 @@ impl ProtocolStream {
         packet_id: PacketId,
         data: T,
     ) -> OpenRgbResult<()> {
-        if matches!(packet_id, PacketId::RGBControllerUpdateLeds | PacketId::RGBControllerUpdateMode) {
+        if matches!(
+            packet_id,
+            PacketId::RGBControllerUpdateLeds | PacketId::RGBControllerUpdateMode
+        ) {
             // Peek never consumes a partial packet. A pending notification must be
             // handled before an output write, using the existing bounded parser.
             loop {
@@ -323,11 +328,16 @@ impl ProtocolStream {
                         Poll::Ready(Ok(_)) => Poll::Ready(Ok(true)),
                         Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
                     }
-                }).await?;
-                if !ready { break; }
+                })
+                .await?;
+                if !ready {
+                    break;
+                }
                 let packet = self.recv_packet().await?;
                 if !packet.header.packet_id.is_server_only() {
-                    return Err(ProtocolError("Unexpected pending OpenRGB packet before output".into()));
+                    return Err(ProtocolError(
+                        "Unexpected pending OpenRGB packet before output".into(),
+                    ));
                 }
             }
         }

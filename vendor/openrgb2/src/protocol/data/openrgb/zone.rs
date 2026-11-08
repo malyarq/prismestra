@@ -1,10 +1,10 @@
 use flagset::{FlagSet, flags};
 
+use crate::OpenRgbResult;
 use crate::protocol::{DeserFromBuf, ReceivedMessage};
 use crate::{
     ModeData, SerToBuf, data::openrgb::matrix::MatrixMapData, protocol::data::ProtocolOption,
 };
-use crate::OpenRgbResult;
 
 use super::SegmentData;
 

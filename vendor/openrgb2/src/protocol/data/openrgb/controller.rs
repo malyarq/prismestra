@@ -35,7 +35,9 @@ impl DeserFromBuf for ControllerIds {
     fn deserialize(buf: &mut ReceivedMessage<'_>) -> OpenRgbResult<Self> {
         let count = buf.read_value::<u32>()?;
         if count > 128 {
-            return Err(crate::OpenRgbError::ProtocolError("OpenRGB controller count exceeds 128".into()));
+            return Err(crate::OpenRgbError::ProtocolError(
+                "OpenRGB controller count exceeds 128".into(),
+            ));
         }
         let ids = buf.read_n_values(count as usize)?;
         Ok(Self { ids })
@@ -200,7 +202,9 @@ impl DeserFromBuf for ControllerData {
         let location = buf.read_value()?;
         let num_modes = buf.read_value::<u16>()?;
         if num_modes > 256 {
-            return Err(crate::OpenRgbError::ProtocolError("OpenRGB mode count exceeds 256".into()));
+            return Err(crate::OpenRgbError::ProtocolError(
+                "OpenRGB mode count exceeds 256".into(),
+            ));
         }
         let active_mode = buf.read_value()?;
 
@@ -211,7 +215,9 @@ impl DeserFromBuf for ControllerData {
 
         let zone_count = buf.read_value::<u16>()? as usize;
         if zone_count > 256 {
-            return Err(crate::OpenRgbError::ProtocolError("OpenRGB zone count exceeds 256".into()));
+            return Err(crate::OpenRgbError::ProtocolError(
+                "OpenRGB zone count exceeds 256".into(),
+            ));
         }
         let mut zones = buf.read_n_values::<ZoneData>(zone_count)?;
         let mut num_leds = 0;
@@ -221,7 +227,9 @@ impl DeserFromBuf for ControllerData {
         }
 
         if zones.len() > 256 || num_leds > 8192 || modes.len() > 256 {
-            return Err(crate::OpenRgbError::ProtocolError("OpenRGB controller geometry exceeds limits".into()));
+            return Err(crate::OpenRgbError::ProtocolError(
+                "OpenRGB controller geometry exceeds limits".into(),
+            ));
         }
         let leds: Vec<LedData> = buf.read_value()?;
         let colors: Vec<Color> = buf.read_value()?;
@@ -229,7 +237,9 @@ impl DeserFromBuf for ControllerData {
         let flags = buf.read_value()?;
         let configuration = buf.read_value()?;
         if leds.len() != colors.len() {
-            return Err(crate::OpenRgbError::ProtocolError("OpenRGB LED/color count mismatch".into()));
+            return Err(crate::OpenRgbError::ProtocolError(
+                "OpenRGB LED/color count mismatch".into(),
+            ));
         }
 
         Ok(Self {

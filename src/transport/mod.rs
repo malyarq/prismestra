@@ -24,6 +24,6 @@ pub mod serial;
 pub mod serial_windows;
 pub mod skydimo;
 pub mod valkyrie;
-pub mod wled;
 #[cfg(windows)]
 mod windows_io;
+pub mod wled;

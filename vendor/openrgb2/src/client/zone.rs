@@ -33,10 +33,16 @@ impl<'c> Zone<'c> {
 
     /// Actual output count; effects-only resizable zones have at most one output.
     pub fn num_output_leds(&self) -> usize {
-        if self.zone_data.flags.value().is_some_and(|flags|
-            flags.contains(crate::ZoneFlags::ResizableForEffectsOnly)) {
+        if self
+            .zone_data
+            .flags
+            .value()
+            .is_some_and(|flags| flags.contains(crate::ZoneFlags::ResizableForEffectsOnly))
+        {
             self.num_leds().min(1)
-        } else { self.num_leds() }
+        } else {
+            self.num_leds()
+        }
     }
 
     delegate::delegate! {

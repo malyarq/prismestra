@@ -93,7 +93,9 @@ impl OpenRgbClient {
             0..=5 => {
                 let count = self.proto.get_controller_count().await?;
                 if count > 128 {
-                    return Err(OpenRgbError::ProtocolError("OpenRGB controller count exceeds 128".into()));
+                    return Err(OpenRgbError::ProtocolError(
+                        "OpenRGB controller count exceeds 128".into(),
+                    ));
                 }
                 (0..count).collect::<Vec<_>>()
             }

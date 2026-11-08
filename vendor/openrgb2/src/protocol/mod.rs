@@ -89,9 +89,7 @@ impl OpenRgbProtocol {
 
         if proto.protocol_id >= 6 {
             let _server_flags = proto
-                .set_client_flags(
-                    ClientFlags::RGBControllerSupport.into(),
-                )
+                .set_client_flags(ClientFlags::RGBControllerSupport.into())
                 .await?;
         }
         Ok(proto)
