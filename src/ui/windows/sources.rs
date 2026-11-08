@@ -38,7 +38,7 @@ pub(super) struct Editor {
     load_error: Option<String>,
     path: PathBuf,
     pub(super) registry: Arc<Mutex<Registry>>,
-    lighting: Option<Arc<Subscription>>,
+    pub(super) lighting: Option<Arc<Subscription>>,
     draft: Draft,
     baseline: Draft,
     selected: Option<usize>,
