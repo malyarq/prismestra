@@ -2142,6 +2142,7 @@ struct State {
     shell_window: Cell<HWND>,
     session_action: Cell<resident::Action>,
     tray_enabled: Cell<bool>,
+    pending_power: Cell<resident::PowerIntent>,
 }
 fn dialog(hwnd: HWND, save: bool) -> Result<Option<PathBuf>, String> {
     profile_dialog(hwnd, save, false)
@@ -2453,6 +2454,15 @@ unsafe fn dispatch(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
         }
         return unsafe { DefWindowProcW(hwnd, msg, w, l) };
+    }
+    // The editor can exist briefly before its permanent shell has been created.
+    if msg == WM_POWERBROADCAST && state.resident.get() && state.shell_window.get().is_null() {
+        if matches!(w as u32, PBT_APMSUSPEND | PBT_APMRESUMEAUTOMATIC)
+            && let Err(error) = resident::power_message(state, w as u32 == PBT_APMSUSPEND)
+        {
+            resident::report(state, error);
+        }
+        return 1;
     }
     if msg == WM_DESTROY {
         if let Ok(mut slot) = state.app.try_borrow_mut()
@@ -2817,6 +2827,7 @@ fn run_inner(args: Vec<OsString>) -> Result<(), String> {
         shell_window: Cell::new(null_mut()),
         session_action: Cell::new(resident::Action::None),
         tray_enabled: Cell::new(false),
+        pending_power: Cell::new(resident::PowerIntent::default()),
     });
     let instance = unsafe { GetModuleHandleW(null()) };
     let class = wide(CLASS);

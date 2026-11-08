@@ -24,6 +24,50 @@ pub(super) enum Action {
     Stop,
     Exit,
 }
+/// Coalesce notifications without losing a suspend preceding the latest resume.
+/// This lives outside App, including while native window teardown temporarily takes App.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub(super) struct PowerIntent {
+    saw_suspend: bool,
+    latest: Option<bool>,
+}
+impl PowerIntent {
+    fn record(&mut self, suspended: bool) {
+        self.saw_suspend |= suspended;
+        self.latest = Some(suspended);
+    }
+}
+pub(super) fn power_message(state: &State, suspended: bool) -> Result<(), String> {
+    let mut pending = state.pending_power.get();
+    pending.record(suspended);
+    state.pending_power.set(pending);
+    flush_power(state)
+}
+fn flush_power(state: &State) -> Result<(), String> {
+    let pending = state.pending_power.get();
+    let Some(latest) = pending.latest else {
+        return Ok(());
+    };
+    let Ok(mut slot) = state.app.try_borrow_mut() else {
+        return Ok(());
+    };
+    let Some(app) = slot.as_mut() else {
+        return Ok(());
+    };
+    if !app.shutdown.active() {
+        if pending.saw_suspend {
+            app.runtime
+                .notify_power(true, crate::clock::monotonic_us())?;
+        }
+        if !latest {
+            app.runtime
+                .notify_power(false, crate::clock::monotonic_us())?;
+        }
+    }
+    // Explicit Stop/Exit supersedes queued notifications; it must not reopen devices.
+    state.pending_power.set(PowerIntent::default());
+    Ok(())
+}
 /// The OS file handle supplies exclusion even after a crash; a stale filename does not lock.
 pub(super) struct Instance {
     _file: File,
@@ -365,10 +409,38 @@ pub(super) fn open_editor(state: &State) -> Result<(), String> {
     Ok(())
 }
 fn request(state: &State, action: Action, confirm: bool) -> Result<(), String> {
-    if state.session_action.get() != Action::None {
+    let current = state.session_action.get();
+    let upgrade = current == Action::Stop && action == Action::Exit;
+    if current != Action::None && !upgrade {
         return Ok(());
     }
     if action == Action::Exit && confirm && !confirm_discard(state.editor_window.get(), state)? {
+        return Ok(());
+    }
+    if upgrade {
+        let unapplied = {
+            let slot = state.app.borrow();
+            let app = slot.as_ref().ok_or("Нет сессии")?;
+            !app.widgets.is_empty()
+                && (app.editor_dirty
+                    || app.guard_connections_close().is_err()
+                    || app.guard_sources_exit().is_err())
+        };
+        if confirm
+            && unapplied
+            && unsafe {
+                MessageBoxW(
+                    state.editor_window.get(),
+                    wide("Неприменённые правки будут потеряны. Выйти?").as_ptr(),
+                    wide("Выход из Prismestra").as_ptr(),
+                    MB_OKCANCEL | MB_ICONQUESTION,
+                )
+            } != IDOK
+        {
+            return Ok(());
+        }
+        // Keep the existing shutdown/drain barrier. Do not rebuild an idle Runtime or write files.
+        state.session_action.set(Action::Exit);
         return Ok(());
     }
     let mut slot = state.app.borrow_mut();
@@ -412,6 +484,7 @@ fn finish_stop(app: &mut App) -> Result<(), String> {
     Ok(())
 }
 fn maintain(state: &State) -> Result<(), String> {
+    flush_power(state)?;
     let mut slot = state.app.try_borrow_mut().map_err(|_| "Сессия занята")?;
     let app = slot.as_mut().ok_or("Нет сессии")?;
     if state.editor_window.get().is_null() || state.session_action.get() != Action::None {
@@ -544,13 +617,8 @@ unsafe fn dispatch(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
             Ok(())
         }
         WM_POWERBROADCAST => {
-            if let Ok(mut slot) = state.app.try_borrow_mut()
-                && let Some(a) = slot.as_mut()
-                && !a.shutdown.active()
-                && matches!(w as u32, PBT_APMSUSPEND | PBT_APMRESUMEAUTOMATIC)
-            {
-                a.runtime
-                    .notify_power(w as u32 == PBT_APMSUSPEND, crate::clock::monotonic_us())
+            if matches!(w as u32, PBT_APMSUSPEND | PBT_APMRESUMEAUTOMATIC) {
+                power_message(state, w as u32 == PBT_APMSUSPEND)
             } else {
                 Ok(())
             }
@@ -821,19 +889,56 @@ pub(super) fn exercise(state: &State) -> Result<(), String> {
         );
     }
     open_editor(state)?;
-    // Simulate only our shell's power messages; never call OS power APIs.
-    unsafe {
-        SendMessageW(shell.hwnd, WM_POWERBROADCAST, PBT_APMSUSPEND as usize, 0);
-        SendMessageW(
-            shell.hwnd,
-            WM_POWERBROADCAST,
-            PBT_APMRESUMEAUTOMATIC as usize,
-            0,
-        );
+    // Neither an outstanding RefCell borrow nor temporary App removal may lose power intent.
+    for unavailable in [false, true] {
+        if unavailable {
+            let app = state.app.borrow_mut().take();
+            unsafe {
+                SendMessageW(shell.hwnd, WM_POWERBROADCAST, PBT_APMSUSPEND as usize, 0);
+                SendMessageW(
+                    shell.hwnd,
+                    WM_POWERBROADCAST,
+                    PBT_APMRESUMEAUTOMATIC as usize,
+                    0,
+                );
+            }
+            if state.pending_power.get()
+                != (PowerIntent {
+                    saw_suspend: true,
+                    latest: Some(false),
+                })
+            {
+                return Err("Power intent was lost while App was temporarily absent".into());
+            }
+            state.app.replace(app);
+        } else {
+            let _held = state.app.borrow_mut();
+            unsafe {
+                SendMessageW(shell.hwnd, WM_POWERBROADCAST, PBT_APMSUSPEND as usize, 0);
+                SendMessageW(
+                    shell.hwnd,
+                    WM_POWERBROADCAST,
+                    PBT_APMRESUMEAUTOMATIC as usize,
+                    0,
+                );
+            }
+            if state.pending_power.get()
+                != (PowerIntent {
+                    saw_suspend: true,
+                    latest: Some(false),
+                })
+            {
+                return Err("Power intent was lost while App was borrowed".into());
+            }
+        }
+        maintain(state)?;
+        if state.pending_power.get().latest.is_some() {
+            return Err("Restored App did not receive queued power intent".into());
+        }
+        settle(state, "queued-simulated-resume", |a| {
+            a.runtime.outputs_ready() == Ok(true)
+        })?;
     }
-    settle(state, "simulated-resume", |a| {
-        a.runtime.outputs_ready() == Ok(true)
-    })?;
     {
         let mut slot = state.app.borrow_mut();
         let a = slot.as_mut().unwrap();
@@ -869,8 +974,53 @@ pub(super) fn exercise(state: &State) -> Result<(), String> {
         return Err("Tray Stop did not release the drained RGB endpoint lease".into());
     }
     open_editor(state)?;
-    // Exit must wait for drain, destroy the editor and post quit only on this UI thread.
+    {
+        let mut slot = state.app.borrow_mut();
+        let a = slot.as_mut().unwrap();
+        let doc = a.runtime.document().clone();
+        a.runtime.request_outputs_for(doc, plan.clone())?;
+    }
+    settle(state, "restart-before-failed-stop", |a| {
+        !a.runtime.pending_configuration() && a.runtime.outputs_ready() == Ok(true)
+    })?;
+    close_editor(state)?;
+    let (original_state_dir, blocker) = {
+        let mut slot = state.app.borrow_mut();
+        let a = slot.as_mut().unwrap();
+        let original = a.state_dir.clone();
+        let blocker = original.join("resident-stop-parent-is-file");
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&blocker)
+            .map_err(|e| e.to_string())?;
+        a.state_dir = blocker.clone();
+        (original, blocker)
+    };
+    request(state, Action::Stop, false)?;
+    let deadline = Instant::now() + std::time::Duration::from_secs(6);
+    loop {
+        if let Err(_error) = maintain(state) {
+            let mut slot = state.app.borrow_mut();
+            let a = slot.as_mut().unwrap();
+            if state.session_action.get() != Action::Stop || !a.close_ready() {
+                return Err("Failed Stop lost its drain barrier".into());
+            }
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err("Stop did not expose the injected persistence failure".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    if crate::runtime::output::Lease::acquire(vec!["resident-ui-fixture:rgb".into()]).is_err() {
+        return Err("Failed Stop still owned a drained RGB endpoint".into());
+    }
+    // Exit upgrades the same barrier despite the still-broken persistence path.
     request(state, Action::Exit, false)?;
+    if state.session_action.get() != Action::Exit {
+        return Err("Exit was ignored after failed Stop".into());
+    }
     settle(state, "exit", |a| {
         a.shutdown.phase() == crate::app::shutdown::Phase::Ready
             && state.editor_window.get().is_null()
@@ -899,6 +1049,8 @@ pub(super) fn exercise(state: &State) -> Result<(), String> {
     {
         let mut slot = state.app.borrow_mut();
         let a = slot.as_mut().unwrap();
+        a.state_dir = original_state_dir;
+        std::fs::remove_file(&blocker).map_err(|e| e.to_string())?;
         finish_stop(a)?;
         a.runtime
             .request_outputs_for(original.clone(), prior_plan)?;
@@ -922,7 +1074,7 @@ pub(super) fn exercise(state: &State) -> Result<(), String> {
     state.tray_enabled.set(false);
     state.resident.set(false);
     eprintln!(
-        "Resident session stand PASS: owned hidden top-level shell, editor destroy/reopen twice, same Runtime/output revision/Registry, one shared reader, live software RGB while editor absent, simulated shell power events, Stop drain, Exit drain and quit; no tray icon, native hardware or OS power operations"
+        "Resident session stand PASS: owned hidden top-level shell, editor destroy/reopen twice, same Runtime/output revision/Registry, one shared reader, live software RGB while editor absent, queued shell power under active borrow and absent App, Stop drain, failed Stop persistence then Exit upgrade/drain/quit; no tray icon, native hardware or OS power operations"
     );
     Ok(())
 }
@@ -930,6 +1082,28 @@ pub(super) fn exercise(state: &State) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn power_coalescing_preserves_suspend_before_latest_resume() {
+        let mut pending = PowerIntent::default();
+        pending.record(true);
+        pending.record(false);
+        pending.record(false);
+        assert_eq!(
+            pending,
+            PowerIntent {
+                saw_suspend: true,
+                latest: Some(false)
+            }
+        );
+        pending.record(true);
+        assert_eq!(
+            pending,
+            PowerIntent {
+                saw_suspend: true,
+                latest: Some(true)
+            }
+        );
+    }
     #[test]
     fn instance_is_exclusive_for_same_state_and_released_by_the_handle() {
         let dir = std::env::temp_dir().join(format!("prismestra-instance-{}", std::process::id()));
