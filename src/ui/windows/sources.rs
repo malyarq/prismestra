@@ -1,4 +1,4 @@
-//! Local preferences and observation UI. This module never creates a native resolver.
+//! Local preferences and observation UI. Native readers start only on explicit operator action.
 use super::*;
 use crate::app::{
     sensor_bindings::{Catalog, Scope},
@@ -49,6 +49,7 @@ pub(super) struct Editor {
     inventory: Option<crate::app::sensor_discovery::Inventory>,
     pub(super) scan_message: String,
     resolver: Option<Box<dyn crate::app::sensor_sessions::Resolver>>,
+    pub(super) native_allowed: bool,
     lighting_active: Option<bindings::Active>,
 }
 impl Editor {
@@ -83,7 +84,7 @@ impl Editor {
             scan_factory: None,
             inventory: None,
             scan_message: "Поиск оборудования недоступен в режиме предпросмотра. Можно добавить датчик вручную.".into(),
-            resolver:None,lighting_active:None,
+            resolver:None,native_allowed:false,lighting_active:None,
         }
     }
     fn save(&mut self, next: Catalog) -> Result<(), String> {
@@ -260,7 +261,10 @@ impl App {
     fn read_source_draft(&self) -> Draft {
         Draft {
             id: self.text(ID),
-            family: Family::ALL[self.combo_index(FAMILY).unwrap_or(0).min(3)],
+            family: Family::ALL[self
+                .combo_index(FAMILY)
+                .unwrap_or(0)
+                .min(Family::ALL.len() - 1)],
             values: std::array::from_fn(|i| self.text(FIELD + i as i32)),
         }
     }
@@ -441,7 +445,10 @@ impl App {
             .contains(&id);
         }
         if id == bindings::MODULE {
-            return matches!(self.sources.draft.family, Family::Amd | Family::Ddr5);
+            return matches!(
+                self.sources.draft.family,
+                Family::Amd | Family::Ddr5 | Family::FanControl
+            );
         }
         if (LABEL..LABEL + 6).contains(&id) {
             return !self.sources.draft.labels()[(id - LABEL) as usize].is_empty();
@@ -554,8 +561,12 @@ impl App {
             }
             FAMILY if notice == CBN_SELCHANGE as u16 => {
                 let id = self.text(ID);
-                self.sources.draft =
-                    Draft::new(Family::ALL[self.combo_index(FAMILY).unwrap_or(0).min(3)]);
+                self.sources.draft = Draft::new(
+                    Family::ALL[self
+                        .combo_index(FAMILY)
+                        .unwrap_or(0)
+                        .min(Family::ALL.len() - 1)],
+                );
                 self.sources.draft.id = id;
                 self.fill_source_draft();
                 self.show_page();
@@ -700,8 +711,23 @@ pub(super) fn exercise(state: &State) -> Result<(), String> {
     }
     let mut slot = state.app.borrow_mut();
     let a = slot.as_mut().unwrap();
+    if a.sources.native_allowed || a.sources.resolver.is_some() {
+        return Err("Sensor stand received native access".into());
+    }
     let original_mode = a.combo_index(MODE).unwrap_or(0);
     a.command(NAV_SOURCES, BN_CLICKED as u16)?;
+    unsafe {
+        SendMessageW(a.h(MODE), CB_SETCURSEL, 1, 0);
+    }
+    a.refresh_sources();
+    a.refresh_source_binding_state();
+    if unsafe { IsWindowEnabled(a.h(bindings::START)) } != 0
+        || a.source_bindings_command(bindings::START, BN_CLICKED as u16)
+            .is_ok()
+        || a.sources.resolver.is_some()
+    {
+        return Err("Diagnostic Start created native source capability".into());
+    }
     unsafe {
         SendMessageW(a.h(MODE), CB_SETCURSEL, 0, 0);
     }
@@ -910,6 +936,26 @@ pub(super) fn exercise(state: &State) -> Result<(), String> {
         }
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
+    unsafe {
+        SendMessageW(a.h(MODE), CB_SETCURSEL, 0, 0);
+    }
+    a.sources.selected = None;
+    a.sources.draft = Draft::new(Family::FanControl);
+    a.sources.baseline = a.sources.draft.clone();
+    a.refresh_sources();
+    a.set_text(ID, "selftest/fancontrol");
+    for (i, value) in [
+        r"\\.\pipe\Prismestra-stand-no-server",
+        r"C:\Prismestra-stand-missing\FanControl.exe",
+        "/cpu/package",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        a.set_text(FIELD + i as i32, value);
+    }
+    a.sources_command(SAVE_SOURCE, BN_CLICKED as u16)?;
+    if !Catalog::load(&a.sources.path)?.sources.iter().any(|s|matches!(&s.target,crate::app::sensor_bindings::Target::FanControl{sensor_id,..} if sensor_id=="/cpu/package")) || !a.sources.registry.lock().unwrap().status().is_empty() {return Err("FanControl GUI descriptor save did not roundtrip or started a reader".into());}
     a.sources.save(original)?;
     a.sources.selected = None;
     a.sources.draft = Draft::new(Family::Nvidia);

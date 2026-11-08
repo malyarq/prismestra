@@ -2,7 +2,7 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::{fmt::Debug, time::Duration};
 
-use flagset::FlagSet;
+use crate::FlagSet;
 use tokio::net::ToSocketAddrs;
 use tokio::sync::Mutex;
 
@@ -826,8 +826,8 @@ mod tests {
 
     use std::time::Duration;
 
+    use crate::FlagSet;
     use crate::{SegmentData, ZoneFlags};
-    use flagset::FlagSet;
     use tracing_test::traced_test;
 
     use crate::{

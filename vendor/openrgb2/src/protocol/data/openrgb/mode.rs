@@ -1,4 +1,4 @@
-use flagset::{FlagSet, flags};
+use crate::{FlagSet, sdk_flags as flags};
 
 use crate::ReceivedMessage;
 use crate::data::ProtocolOption;
@@ -23,7 +23,7 @@ flags! {
         HasDirectionHV = 1 << 3,
 
         /// Mode has direction parameter.
-        HasDirection = (ModeFlag::HasDirectionLR | ModeFlag::HasDirectionUD | ModeFlag::HasDirectionHV).bits(),
+        HasDirection = ModeFlag::HasDirectionLR.bits() | ModeFlag::HasDirectionUD.bits() | ModeFlag::HasDirectionHV.bits(),
 
         /// Mode has brightness parameter.
         HasBrightness = 1 << 4,
@@ -434,14 +434,14 @@ impl SerToBuf for ModeData {
 mod tests {
     use std::error::Error;
 
-    use flagset::FlagSet;
+    use crate::FlagSet;
 
     use crate::{
         Color, ModeData, ProtocolOption, WriteMessage,
         data::{ColorMode, Direction},
         protocol::data::ModeFlag,
     };
-    use ModeFlag::*;
+    use ModeFlag as F;
 
     #[tokio::test]
     async fn test_read_flag() -> Result<(), Box<dyn Error>> {
@@ -450,7 +450,7 @@ mod tests {
 
         assert_eq!(
             msg.read_value::<FlagSet<ModeFlag>>()?,
-            HasDirectionLR | HasDirectionHV | HasBrightness | HasRandomColor
+            F::HasDirectionLR | F::HasDirectionHV | F::HasBrightness | F::HasRandomColor
         );
 
         Ok(())

@@ -13,6 +13,9 @@ use std::{
     path::Path,
 };
 
+pub mod home_assistant;
+pub mod openrgb;
+
 pub const MAX_JSON_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_DEVICES: usize = 256;
 pub const MAX_POINTS: usize = 65_536;
@@ -32,6 +35,8 @@ pub enum Driver {
     SkydimoSerial { model: String },
     DoorBle,
     WledDdp,
+    OpenRgb,
+    HomeAssistant,
     TtLcd,
     Fusion2 { headers: [usize; 2] },
     EneDram,
@@ -72,6 +77,25 @@ impl Device {
             return Err("Invalid device ID, label, rate or LED bound".into());
         }
         match &self.driver {
+            Driver::HomeAssistant => {
+                if !matches!(self.role, Role::Canvas | Role::Ambient)
+                    || self.leds != 1
+                    || self.rate_hz != 1
+                {
+                    return Err("Home Assistant controls one whole light at 1 Hz".into());
+                }
+            }
+            Driver::OpenRgb => {
+                if !matches!(self.role, Role::Canvas | Role::Ambient)
+                    || !(1..=8192).contains(&self.leds)
+                    || self.rate_hz > 60
+                {
+                    return Err(
+                        "OpenRGB requires a complete 1..8192 LED controller and at most 60 Hz"
+                            .into(),
+                    );
+                }
+            }
             Driver::WledDdp => {
                 if !matches!(self.role, Role::Canvas | Role::Ambient)
                     || !(1..=65_535).contains(&self.leds)
@@ -236,6 +260,16 @@ impl Setup {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Binding {
+    HomeAssistant {
+        endpoint: String,
+        entity: String,
+        credential_id: String,
+    },
+    OpenRgb {
+        endpoint: std::net::SocketAddr,
+        identity: String,
+        topology: String,
+    },
     WledDdp {
         endpoint: std::net::SocketAddr,
     },
@@ -271,6 +305,15 @@ pub(crate) fn canonical_endpoint(endpoint: std::net::SocketAddr) -> std::net::So
 impl Binding {
     pub(crate) fn endpoint_keys(&self) -> Vec<String> {
         match self {
+            Self::HomeAssistant {
+                endpoint, entity, ..
+            } => vec![format!(
+                "ha:{}:{entity}",
+                home_assistant::canonical_endpoint(endpoint).unwrap_or_else(|_| endpoint.clone())
+            )],
+            // Until the SDK exposes a verified server namespace, identical
+            // physical metadata across server addresses is conservatively one owner.
+            Self::OpenRgb { identity, .. } => vec![format!("openrgb:{identity}")],
             Self::WledDdp { endpoint } => vec![format!("wled:{}", canonical_endpoint(*endpoint))],
             Self::Serial {
                 port, instance_id, ..
@@ -286,6 +329,45 @@ impl Binding {
     pub fn validate(&self, device: &Device) -> Result<(), String> {
         device.validate()?;
         match (self, &device.driver) {
+            (
+                Self::HomeAssistant {
+                    endpoint,
+                    entity,
+                    credential_id,
+                },
+                Driver::HomeAssistant,
+            ) => {
+                if !home_assistant::valid_entity(entity)
+                    || &home_assistant::credential_id(endpoint)? != credential_id
+                {
+                    return Err("Home Assistant binding requires a light entity and its own endpoint credential reference".into());
+                }
+                Ok(())
+            }
+
+            (
+                Self::OpenRgb {
+                    endpoint,
+                    identity,
+                    topology,
+                },
+                Driver::OpenRgb,
+            ) => {
+                let ip = endpoint.ip().to_canonical();
+                if endpoint.port() == 0
+                    || ip.is_unspecified()
+                    || ip.is_multicast()
+                    || ip == std::net::IpAddr::V4(std::net::Ipv4Addr::BROADCAST)
+                    || !openrgb::valid_hash(identity)
+                    || !openrgb::valid_hash(topology)
+                {
+                    return Err(
+                        "Select an unambiguous OpenRGB controller from its server inventory".into(),
+                    );
+                }
+                Ok(())
+            }
+
             (Self::WledDdp { endpoint }, Driver::WledDdp) => {
                 let ip = endpoint.ip().to_canonical();
                 if endpoint.port() == 0

@@ -7,7 +7,9 @@ use crate::app::lighting_bindings::{
 #[path = "connections_stand.rs"]
 mod stand;
 pub(super) fn exercise(hwnd: HWND, state: &State) -> Result<(), String> {
-    stand::exercise(hwnd, state)
+    stand::exercise(hwnd, state)?;
+    stand::exercise_openrgb(state)?;
+    stand::exercise_home_assistant(state)
 }
 pub(super) fn snapshot_scan(state: &State) -> Result<(), String> {
     stand::snapshot_scan(state)
@@ -33,6 +35,7 @@ const PATH_LABEL: i32 = 1817;
 const APPLY_OUTPUTS: i32 = 1818;
 const REVERT_OUTPUTS: i32 = 1819;
 const ACTIVE_STATUS: i32 = 1820;
+const SAVE_KEY: i32 = 1821;
 type PlanFactory = std::sync::Arc<
     dyn Fn(
             &crate::app::lighting_outputs::Local,
@@ -47,6 +50,8 @@ struct Activation {
     native: bool,
 }
 struct Previous {
+    document: Document,
+    applied_document: Document,
     plan: crate::app::runtime::OutputPlan,
     local: Option<crate::app::lighting_outputs::Local>,
 }
@@ -58,13 +63,14 @@ struct Pending {
 }
 
 pub(super) fn is_control(id: i32) -> bool {
-    (TARGET_LABEL..=ACTIVE_STATUS).contains(&id)
+    (TARGET_LABEL..=SAVE_KEY).contains(&id)
 }
 pub(super) struct Editor {
     activation: Option<Activation>,
     pending: Option<Pending>,
     previous: Option<Previous>,
     watch_outputs: bool,
+    stand_keys: BTreeMap<String, String>,
     path: PathBuf,
     factory: Option<discovery::Factory>,
     pub(super) scan: discovery::Worker,
@@ -72,6 +78,8 @@ pub(super) struct Editor {
     targets: Vec<BindingTarget>,
     selected: usize,
     inventory: Option<discovery::Inventory>,
+    scan_endpoint: Option<String>,
+    controllers: BTreeMap<String, crate::transport::openrgb::ControllerInfo>,
     edited: bool,
     removed: bool,
     syncing: bool,
@@ -83,6 +91,7 @@ impl Editor {
             pending: None,
             previous: None,
             watch_outputs: false,
+            stand_keys: BTreeMap::new(),
             path,
             factory,
             scan: Default::default(),
@@ -90,6 +99,8 @@ impl Editor {
             targets: vec![],
             selected: 0,
             inventory: None,
+            scan_endpoint: None,
+            controllers: BTreeMap::new(),
             edited: false,
             removed: false,
             syncing: false,
@@ -116,7 +127,23 @@ impl Editor {
     }
     fn scannable(&self) -> bool {
         matches!(self.current(), Some(BindingTarget::Monitor(_)))
-            || matches!(self.current(),Some(BindingTarget::Device(d)) if matches!(d.driver,crate::devices::Driver::Fusion2{..}|crate::devices::Driver::Valkyrie{..}|crate::devices::Driver::TtLcd|crate::devices::Driver::SkydimoSerial{..}))
+            || matches!(self.current(),Some(BindingTarget::Device(d)) if matches!(d.driver,crate::devices::Driver::HomeAssistant|crate::devices::Driver::OpenRgb|crate::devices::Driver::Fusion2{..}|crate::devices::Driver::Valkyrie{..}|crate::devices::Driver::TtLcd|crate::devices::Driver::SkydimoSerial{..}))
+    }
+    fn home_assistant(&self) -> bool {
+        matches!(self.current(),Some(BindingTarget::Device(d)) if d.driver==crate::devices::Driver::HomeAssistant)
+    }
+    fn key(&self, id: &str) -> Result<String, String> {
+        match self.activation.as_ref().map(|a| a.native) {
+            Some(true) => crate::credentials_windows::read(id)
+                .map_err(|e| e.to_string())?
+                .ok_or("Сначала сохраните ключ Home Assistant.".into()),
+            Some(false) => self
+                .stand_keys
+                .get(id)
+                .cloned()
+                .ok_or("Сначала сохраните тестовый ключ.".into()),
+            None => Err("Ключи в диагностическом снимке недоступны.".into()),
+        }
     }
     fn dirty(&self) -> bool {
         self.edited || self.workspace.as_ref().is_some_and(|w| w.dirty)
@@ -166,6 +193,7 @@ impl App {
             }
         }
         for (id, label) in [
+            (SAVE_KEY, "Сохранить ключ"),
             (SAVE_BINDING, "Сохранить"),
             (RESET_BINDING, "Отменить правки"),
             (REMOVE, "Удалить привязку"),
@@ -199,10 +227,11 @@ impl App {
         match id {
             ENDPOINT | ENDPOINT_LABEL => self.connections.current().is_some(),
             IDENTITY | IDENTITY_LABEL => {
-                matches!(self.connections.current(),Some(BindingTarget::Device(d)) if matches!(d.driver,crate::devices::Driver::SkydimoSerial{..}|crate::devices::Driver::EneDram))
+                matches!(self.connections.current(),Some(BindingTarget::Device(d)) if matches!(d.driver,crate::devices::Driver::HomeAssistant|crate::devices::Driver::SkydimoSerial{..}|crate::devices::Driver::EneDram))
             }
+            SAVE_KEY => self.connections.home_assistant(),
             SERIAL | SERIAL_LABEL => {
-                matches!(self.connections.current(),Some(BindingTarget::Device(d)) if matches!(d.driver,crate::devices::Driver::SkydimoSerial{..}))
+                matches!(self.connections.current(),Some(BindingTarget::Device(d)) if matches!(d.driver,crate::devices::Driver::HomeAssistant|crate::devices::Driver::SkydimoSerial{..}))
             }
             _ => true,
         }
@@ -225,6 +254,10 @@ impl App {
             self.pos(label, r, y, 280, 22);
             self.pos(field, r, y + 24, 280, 26);
         }
+        if self.connections.home_assistant() {
+            self.pos(SERIAL, r, 394, 136, 26);
+        }
+        self.pos(SAVE_KEY, r + 144, 394, 136, 26);
         self.pos(SAVE_BINDING, r, 430, 132, 28);
         self.pos(RESET_BINDING, r + 144, 430, 136, 28);
         self.pos(REMOVE, r, 466, 280, 28);
@@ -325,9 +358,36 @@ impl App {
             })
             .unwrap_or_default();
         self.connections.syncing = true;
+        unsafe {
+            SendMessageW(
+                self.h(SERIAL),
+                EM_SETPASSWORDCHAR,
+                if self.connections.home_assistant() {
+                    0x2022
+                } else {
+                    0
+                },
+                0,
+            );
+        }
+        self.set_text(
+            SERIAL_LABEL,
+            if self.connections.home_assistant() {
+                "Новый ключ (пусто = сохранённый)"
+            } else {
+                "ID контроллера (HEX)"
+            },
+        );
         self.set_text(ENDPOINT, &draft.endpoint);
         self.set_text(IDENTITY, &draft.identity);
-        self.set_text(SERIAL, &draft.serial);
+        self.set_text(
+            SERIAL,
+            if self.connections.home_assistant() {
+                ""
+            } else {
+                &draft.serial
+            },
+        );
         self.connections.syncing = false;
         self.connections.edited = false;
         self.connections.removed = false;
@@ -338,6 +398,8 @@ impl App {
         let label = match self.connections.current() {
             Some(BindingTarget::Monitor(_)) => r"Экран Windows (например, \\.\DISPLAY1)",
             Some(BindingTarget::Device(d)) => match d.driver {
+                crate::devices::Driver::HomeAssistant => "Адрес Home Assistant (http://IP:8123)",
+                crate::devices::Driver::OpenRgb => "SDK-сервер OpenRGB (127.0.0.1:6742)",
                 crate::devices::Driver::WledDdp => "IP:порт WLED DDP (обычно 4048)",
                 crate::devices::Driver::DoorBle => "MAC Bluetooth-контроллера",
                 crate::devices::Driver::EneDram => "Проверенный модуль PawnIO",
@@ -347,8 +409,9 @@ impl App {
             None => "Подключение",
         };
         self.set_text(ENDPOINT_LABEL, label);
-        self.set_text(IDENTITY_LABEL,if matches!(self.connections.current(),Some(BindingTarget::Device(d)) if matches!(d.driver,crate::devices::Driver::EneDram)){"Адрес RAM (0x70..0x76)"}else{"USB instance (из метаданных)"});
+        self.set_text(IDENTITY_LABEL,if self.connections.home_assistant(){"Светильник (light.office)"}else if matches!(self.connections.current(),Some(BindingTarget::Device(d)) if matches!(d.driver,crate::devices::Driver::EneDram)){"Адрес RAM (0x70..0x76)"}else{"USB instance (из метаданных)"});
         self.refresh_connections();
+        self.connections_layout(self.width, self.height);
         self.show_page();
     }
     fn refresh_connections(&self) {
@@ -385,6 +448,12 @@ impl App {
         } else {
             let hint = match self.connections.current() {
                 Some(BindingTarget::Device(d)) => match d.driver {
+                    crate::devices::Driver::HomeAssistant => {
+                        "Сохраните ключ в Windows, найдите светильник. Вывод до 1 Гц; HTTP-ответ не подтверждает свечение."
+                    }
+                    crate::devices::Driver::OpenRgb => {
+                        "Поиск читает SDK; «Применить» включает Direct."
+                    }
                     crate::devices::Driver::WledDdp => {
                         "IP:4048 и число LED из WLED. UDP не подтверждает свечение."
                     }
@@ -476,6 +545,7 @@ impl App {
             (ENDPOINT, ready),
             (IDENTITY, ready),
             (SERIAL, ready),
+            (SAVE_KEY, ready && self.connections.activation.is_some()),
             (SAVE_BINDING, ready && self.connections.dirty()),
             (RESET_BINDING, ready || switching),
             (
@@ -519,6 +589,37 @@ impl App {
             return Err("Дождитесь применения подключений или отмените его.".into());
         }
         match id {
+            SAVE_KEY if notice == BN_CLICKED as u16 => {
+                if !self.connections.home_assistant() {
+                    return Err("Ключ относится только к Home Assistant.".into());
+                }
+                let endpoint =
+                    crate::devices::home_assistant::canonical_endpoint(self.text(ENDPOINT).trim())?;
+                let key = crate::devices::home_assistant::credential_id(&endpoint)?;
+                let token = self.text(SERIAL);
+                if token.len() > crate::credentials_windows::MAX_TOKEN_BYTES {
+                    return Err("Ключ превышает предел хранилища Windows (2560 байт).".into());
+                }
+                crate::transport::home_assistant::Client::new(
+                    crate::transport::home_assistant::Endpoint::parse(&endpoint)
+                        .map_err(|e| e.to_string())?,
+                    token.clone(),
+                )
+                .map_err(|e| e.to_string())?;
+                match self.connections.activation.as_ref().map(|a| a.native) {
+                    Some(true) => {
+                        crate::credentials_windows::save(&key, &token).map_err(|e| e.to_string())?
+                    }
+                    Some(false) => {
+                        self.connections.stand_keys.insert(key, token);
+                    }
+                    None => return Err("Хранилище отключено в снимке.".into()),
+                }
+                self.connections.syncing = true;
+                self.set_text(SERIAL, "");
+                self.connections.syncing = false;
+                self.status = "Ключ сохранён отдельно от профиля. Для работающего выхода примените подключения заново.".into();
+            }
             APPLY_OUTPUTS if notice == BN_CLICKED as u16 => {
                 if self.connections.pending.is_some() {
                     self.runtime.retry_configuration()?;
@@ -562,7 +663,53 @@ impl App {
                     .factory
                     .clone()
                     .ok_or("Аппаратный поиск в этом снимке отключён.")?;
+                if self.connections.home_assistant() {
+                    if !self.text(SERIAL).is_empty() {
+                        return Err("Сначала сохраните новый ключ.".into());
+                    }
+                    let key =
+                        crate::devices::home_assistant::credential_id(self.text(ENDPOINT).trim())?;
+                    self.connections.key(&key)?;
+                }
+                let network = matches!(&target,BindingTarget::Device(d) if matches!(d.driver,crate::devices::Driver::OpenRgb|crate::devices::Driver::HomeAssistant));
+                let factory = if network
+                    && self
+                        .connections
+                        .activation
+                        .as_ref()
+                        .is_some_and(|a| a.native)
+                {
+                    let endpoint = self.text(ENDPOINT);
+                    if self.connections.home_assistant() {
+                        if !self.text(SERIAL).is_empty() {
+                            return Err("Сначала сохраните новый ключ.".into());
+                        }
+                        let key = crate::devices::home_assistant::credential_id(endpoint.trim())?;
+                        let token = self.connections.key(&key)?;
+                        self.connections.scan_endpoint = Some(endpoint.clone());
+                        discovery::home_assistant_factory(endpoint, token)?
+                    } else {
+                        let endpoint = if endpoint.trim().is_empty() {
+                            "127.0.0.1:6742"
+                        } else {
+                            endpoint.trim()
+                        };
+                        let endpoint = crate::devices::canonical_endpoint(
+                            endpoint
+                                .parse()
+                                .map_err(|_| "Введите IP:порт SDK-сервера OpenRGB")?,
+                        );
+                        self.connections.scan_endpoint = Some(self.text(ENDPOINT));
+                        discovery::openrgb_factory(endpoint)
+                    }
+                } else {
+                    self.connections.scan_endpoint = None;
+                    factory
+                };
                 self.connections.scan.start(target, factory)?;
+                if network {
+                    self.connections.edited = false;
+                }
                 self.connections.inventory = None;
                 unsafe {
                     SendMessageW(self.h(LIST), LB_RESETCONTENT, 0, 0);
@@ -585,21 +732,46 @@ impl App {
                             .ok()
                             .and_then(|i| v.candidates.get(i))
                     })
-                    .map(|c| c.draft.clone())
+                    .cloned()
                     .ok_or("Результат поиска не выбран")?;
+                if let Some(controller) = &draft.controller
+                    && let Some(BindingTarget::Device(device)) = self.connections.current().cloned()
+                {
+                    self.connections
+                        .controllers
+                        .insert(device.id, controller.clone());
+                }
+                let draft = draft.draft;
                 self.connections.syncing = true;
                 self.set_text(ENDPOINT, &draft.endpoint);
                 self.set_text(IDENTITY, &draft.identity);
-                self.set_text(SERIAL, &draft.serial);
+                self.set_text(
+                    SERIAL,
+                    if self.connections.home_assistant() {
+                        ""
+                    } else {
+                        &draft.serial
+                    },
+                );
                 self.connections.syncing = false;
                 self.connections.edited = true;
                 self.connections.removed = false;
             }
             SAVE_BINDING if notice == BN_CLICKED as u16 => {
+                if self.connections.home_assistant() && !self.text(SERIAL).is_empty() {
+                    return Err("Сначала сохраните новый ключ отдельно.".into());
+                }
+                let serial = if self.connections.removed {
+                    String::new()
+                } else if self.connections.home_assistant() {
+                    crate::devices::home_assistant::credential_id(self.text(ENDPOINT).trim())?
+                } else {
+                    self.text(SERIAL)
+                };
                 let draft = Draft {
                     endpoint: self.text(ENDPOINT),
                     identity: self.text(IDENTITY),
-                    serial: self.text(SERIAL),
+                    serial,
                 };
                 let target = self.connections.current().cloned();
                 let workspace = self
@@ -689,31 +861,55 @@ impl App {
         {
             return Err("Сохраните или отмените правки и дождитесь текущих операций.".into());
         }
+        if revert
+            && self
+                .connections
+                .previous
+                .as_ref()
+                .is_some_and(|old| self.runtime.document() != &old.applied_document)
+        {
+            self.connections.previous = None;
+            self.refresh_connections();
+            return Err("После применения профиль изменён. Возврат отменён, чтобы сохранить новые настройки; выберите и примените подключения заново.".into());
+        }
         let activation = self
             .connections
             .activation
             .as_ref()
             .ok_or("Применение к устройствам в этом снимке отключено")?;
-        let (plan, local) = if revert {
+        let (document, plan, local) = if revert {
             let old = self
                 .connections
                 .previous
                 .as_ref()
                 .ok_or("Нет предыдущего подключения")?;
-            (old.plan.clone(), old.local.clone())
+            (old.document.clone(), old.plan.clone(), old.local.clone())
         } else {
-            let local = crate::app::lighting_outputs::Local::read(
-                &self.connections.path,
-                self.runtime.document(),
-            )?;
-            let plan = (activation.factory)(&local, self.runtime.document(), &self.asset_root)?;
-            (plan, activation.native.then_some(local))
+            let mut document = self.runtime.document().clone();
+            let local =
+                crate::app::lighting_outputs::Local::read_draft(&self.connections.path, &document)?;
+            for (id, binding) in &local.devices {
+                if let crate::devices::Binding::OpenRgb {
+                    identity, topology, ..
+                } = binding
+                    && let Some(controller) = self.connections.controllers.get(id)
+                    && &crate::devices::openrgb::identity(controller) == identity
+                    && &crate::devices::openrgb::topology(controller) == topology
+                {
+                    document = crate::app::device_setup::adopt_openrgb(&document, id, controller)?;
+                }
+            }
+            local.validate(&document)?;
+            let plan = (activation.factory)(&local, &document, &self.asset_root)?;
+            (document, plan, activation.native.then_some(local))
         };
         let previous = Previous {
+            applied_document: document.clone(),
+            document: self.runtime.document().clone(),
             plan: self.runtime.output_plan(),
             local: self.native_lighting.clone(),
         };
-        let revision = self.runtime.request_outputs(plan)?;
+        let revision = self.runtime.request_outputs_for(document, plan)?;
         self.connections.pending = Some(Pending {
             reverting: revert,
             revision,
@@ -744,6 +940,11 @@ impl App {
             }
             let pending = self.connections.pending.take().unwrap();
             if self.runtime.output_revision() == pending.revision {
+                if self.runtime.document() != &pending.previous.document {
+                    self.dirty = true;
+                    self.context_revision = self.context_revision.wrapping_add(1);
+                    self.reset_editor(0);
+                }
                 self.native_lighting = pending.local;
                 self.connections.previous = if pending.reverting {
                     None
@@ -825,7 +1026,13 @@ impl App {
         let Some((target, result)) = self.connections.scan.poll() else {
             return false;
         };
-        if self.connections.current() != Some(&target) {
+        if self
+            .connections
+            .scan_endpoint
+            .take()
+            .is_some_and(|endpoint| endpoint != self.text(ENDPOINT))
+            || self.connections.current() != Some(&target)
+        {
             return false;
         }
         match result {
@@ -857,7 +1064,27 @@ impl App {
 pub(super) fn stand_factory() -> discovery::Factory {
     std::sync::Arc::new(|target, _| {
         let mut inventory = discovery::Inventory::empty(target.clone());
+        if matches!(&target,BindingTarget::Device(d) if d.driver==crate::devices::Driver::OpenRgb) {
+            let controller = stand::openrgb_controller();
+            inventory.candidates.push(discovery::Candidate {
+                controller: Some(controller.clone()),
+                label: "Программный OpenRGB · 3 LED · не оборудование".into(),
+                draft: Draft {
+                    endpoint: "127.0.0.1:6742".into(),
+                    identity: crate::devices::openrgb::identity(&controller),
+                    serial: crate::devices::openrgb::topology(&controller),
+                },
+            });
+            return Ok(inventory);
+        }
         let draft = match &target {
+            BindingTarget::Device(d) if d.driver == crate::devices::Driver::HomeAssistant => {
+                Some(Draft {
+                    endpoint: "http://127.0.0.1:8123".into(),
+                    identity: "light.fixture".into(),
+                    serial: crate::devices::home_assistant::credential_id("http://127.0.0.1:8123")?,
+                })
+            }
             BindingTarget::Device(d)
                 if matches!(d.driver, crate::devices::Driver::Fusion2 { .. }) =>
             {
@@ -876,6 +1103,7 @@ pub(super) fn stand_factory() -> discovery::Factory {
         };
         if let Some(draft) = draft {
             inventory.candidates.push(discovery::Candidate {
+                controller: None,
                 label: "Программный пример · не обнаруженное оборудование".into(),
                 draft,
             });

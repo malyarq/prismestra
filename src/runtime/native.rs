@@ -48,6 +48,37 @@ pub fn bound_factory(
         .clone();
     let keys = binding.endpoint_keys();
     let factory: Factory = match (device.driver, binding) {
+        (
+            Driver::HomeAssistant,
+            Binding::HomeAssistant {
+                endpoint,
+                entity,
+                credential_id,
+            },
+        ) => Arc::new(move |cancel| {
+            Ok(Box::new(super::network::HomeAssistant::connect(
+                &endpoint,
+                &entity,
+                &credential_id,
+                &cancel,
+            )?))
+        }),
+        (
+            Driver::OpenRgb,
+            Binding::OpenRgb {
+                endpoint,
+                identity,
+                topology,
+            },
+        ) => Arc::new(move |cancel| {
+            Ok(Box::new(super::network::OpenRgb::connect(
+                endpoint,
+                &identity,
+                &topology,
+                device.leds,
+                &cancel,
+            )?))
+        }),
         (Driver::WledDdp, Binding::WledDdp { endpoint }) => Arc::new(move |cancel| {
             if cancel.cancelled() {
                 return Err("RGB output stopping".into());

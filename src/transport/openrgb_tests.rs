@@ -186,6 +186,27 @@ fn deadline() -> Instant {
 }
 
 #[test]
+fn virtual_controller_flag_is_recognized_even_with_a_physical_device_type() {
+    let mut payload = controller("SERIAL", false);
+    // SDK controller flags precede the final length-prefixed "{}" configuration.
+    let offset = payload.len() - (4 + 2 + 3);
+    payload[offset..offset + 4].copy_from_slice(&(1u32 << 2).to_le_bytes());
+    let (addr, calls, server) = matrix_server(vec![payload]);
+    let mut session = OpenRgbSession::connect(addr, deadline(), &|| false).unwrap();
+    let inventory = session.scan(deadline(), &|| false).unwrap();
+    assert_eq!(inventory[0].kind, "Virtual");
+    assert!(
+        !calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, id, _)| matches!(id, 1101 | 1050))
+    );
+    drop(session);
+    server.join().unwrap();
+}
+
+#[test]
 fn inventory_is_read_only_and_tolerates_future_values() {
     let (addr, calls, h) = server(usize::MAX, true);
     let mut session = OpenRgbSession::connect(addr, deadline(), &|| false).unwrap();

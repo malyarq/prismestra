@@ -1,5 +1,7 @@
 //! Explicit source adapters. Importing this module never opens a device or DLL.
 use super::sensor_worker;
+#[cfg(any(windows, test))]
+mod fancontrol;
 use crate::sensors::{Reading, nvidia};
 use crate::sensors::{amd, ddr5};
 use crate::{
@@ -186,6 +188,11 @@ pub(crate) fn native_factory(
     use super::sensor_bindings::Target;
     target.validate()?;
     match target {
+        Target::FanControl {
+            pipe_name,
+            expected_server,
+            sensor_id,
+        } => fancontrol::factory(pipe_name, expected_server, sensor_id),
         Target::Liquid { explicit_mi00_path } => liquid_factory(explicit_mi00_path, |_| {
             Ok(crate::lcd::hid_windows::NativeBackend)
         }),

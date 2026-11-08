@@ -188,12 +188,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "flagset"
-version = "0.4.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7ac824320a75a52197e8f2d787f6a38b6718bb6897a35142d749af3c0e8f4fe"
-
-[[package]]
 name = "flate2"
 version = "1.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -414,8 +408,8 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 name = "openrgb2"
 version = "0.4.1"
 dependencies = [
+ "bitflags",
  "delegate",
- "flagset",
  "rgb",
  "serde",
  "serde_json",

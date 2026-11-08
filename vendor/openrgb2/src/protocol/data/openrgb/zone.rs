@@ -1,4 +1,4 @@
-use flagset::{FlagSet, flags};
+use crate::{FlagSet, sdk_flags as flags};
 
 use crate::OpenRgbResult;
 use crate::protocol::{DeserFromBuf, ReceivedMessage};

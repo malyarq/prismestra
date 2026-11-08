@@ -31,6 +31,11 @@ fn server(responses: Vec<Vec<u8>>) -> (String, JoinHandle<Vec<String>>) {
                     Err(e) => panic!("loopback accept: {e}"),
                 }
             };
+            // Accepted Windows sockets can inherit the listener's nonblocking mode.
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(1)))
                 .unwrap();

@@ -37,4 +37,5 @@ pub(crate) use protocol::*;
 
 mod client;
 mod error;
+mod flags;
 pub(crate) mod protocol;

@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use crate::{Controller, Direction, ModeData, ModeFlag, OpenRgbError, OpenRgbResult};
 
-pub use flagset::FlagSet;
+pub use crate::flags::FlagSet;
 
 /// Kinds of modes that exist. `Direct` is usually the mode you want to use.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]

@@ -76,12 +76,20 @@ impl Runtime {
     }
     /// Reuse the configuration drain/persistence barrier.
     pub fn request_outputs(&mut self, outputs: OutputPlan) -> Result<u64, String> {
-        outputs.validate(&self.document)?;
+        self.request_outputs_for(self.document.clone(), outputs)
+    }
+    /// One transaction for discovered controller geometry and its deferred outputs.
+    pub fn request_outputs_for(
+        &mut self,
+        document: Document,
+        outputs: OutputPlan,
+    ) -> Result<u64, String> {
+        outputs.validate(&document)?;
         let revision = self
             .output_revision
             .checked_add(1)
             .ok_or("Output revision exhausted")?;
-        self.request_document_to(self.document.clone(), None, Some(outputs))?;
+        self.request_document_to(document, None, Some(outputs))?;
         Ok(revision)
     }
 }

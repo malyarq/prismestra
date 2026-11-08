@@ -18,7 +18,7 @@
 
 Prismestra is a local lighting orchestrator for Windows. Its goal is to bring PC RGB, unusual Bluetooth lights, LCD displays and home lighting into one spatial scene, with explicit device support and a small resident engine.
 
-**Source preview.** The scene engine and native editor are implemented. OpenRGB, WLED and Home Assistant transports have software tests; their complete setup paths and hardware acceptance are still being integrated. Keeping the engine alive after closing the editor is also in progress. See the [compatibility table](docs/compatibility.md) before choosing a device.
+**Source preview.** The scene engine, native editor and OpenRGB/WLED/Home Assistant setup paths are implemented and have software tests. Home Assistant tokens use Windows Credential Manager. Hardware acceptance, enabling native control from an ordinary GUI launch, and keeping the engine alive after closing the editor are still in progress. See the [compatibility table](docs/compatibility.md) before choosing a device.
 
 ## What it does
 
@@ -65,6 +65,8 @@ cargo clippy --locked --all-targets -- -D warnings
 The [Windows workflow](.github/workflows/windows.yml) checks software behavior without real device activation. Tests use fixtures, temporary files and loopback servers. Physical acceptance and resource measurements are separate work; no performance numbers are claimed yet.
 
 To report a device or help add one, start with [contributing](CONTRIBUTING.md). A precise model, revision, firmware and connection mode are more useful than a vendor-wide support request.
+
+Maintainers can build a package with its exact source, dependency sources, licenses and checksums using the [release instructions](docs/releasing.md).
 
 ## Upstream work and license
 

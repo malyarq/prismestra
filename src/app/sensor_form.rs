@@ -10,9 +10,16 @@ pub enum Family {
     Amd,
     Ddr5,
     Liquid,
+    FanControl,
 }
 impl Family {
-    pub const ALL: [Self; 4] = [Self::Nvidia, Self::Amd, Self::Ddr5, Self::Liquid];
+    pub const ALL: [Self; 5] = [
+        Self::Nvidia,
+        Self::Amd,
+        Self::Ddr5,
+        Self::Liquid,
+        Self::FanControl,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -20,6 +27,7 @@ impl Family {
             Self::Amd => "AMD — Tctl процессора",
             Self::Ddr5 => "DDR5 — температура SPD",
             Self::Liquid => "Жидкость — HID MI00",
+            Self::FanControl => "FanControl — кэш температур",
         }
     }
 }
@@ -46,9 +54,19 @@ impl Draft {
             Target::Amd { .. } => Family::Amd,
             Target::Ddr5 { .. } => Family::Ddr5,
             Target::Liquid { .. } => Family::Liquid,
+            Target::FanControl { .. } => Family::FanControl,
         });
         draft.id = source.id.clone();
         match &source.target {
+            Target::FanControl {
+                pipe_name,
+                expected_server,
+                sensor_id,
+            } => {
+                draft.values[0] = pipe_name.clone();
+                draft.values[1] = expected_server.clone();
+                draft.values[2] = sensor_id.clone();
+            }
             Target::Nvidia { pci } => {
                 for (slot, value) in draft.values.iter_mut().zip([
                     pci.device_id,
@@ -92,6 +110,14 @@ impl Draft {
     /// Empty labels indicate unused slots; nonempty unused values are rejected.
     pub fn labels(&self) -> [&'static str; 6] {
         match self.family {
+            Family::FanControl => [
+                r"Локальный pipe (\\.\pipe\имя)",
+                "Путь запущенного FanControl.exe",
+                "Точный ID температуры",
+                "",
+                "",
+                "",
+            ],
             Family::Nvidia => [
                 "PCI device ID (hex32)",
                 "PCI subsystem ID (hex32)",
@@ -136,6 +162,11 @@ impl Draft {
         let decimal =
             |index: usize, bits| number(self.values[index].as_str(), labels[index], 10, bits);
         let target = match self.family {
+            Family::FanControl => Target::FanControl {
+                pipe_name: self.values[0].clone(),
+                expected_server: self.values[1].clone(),
+                sensor_id: self.values[2].clone(),
+            },
             Family::Nvidia => Target::Nvidia {
                 pci: Pci {
                     device_id: hex(0, 32)? as u32,
@@ -175,6 +206,7 @@ impl Draft {
             }
         };
         target.validate().map_err(|_| match self.family {
+            Family::FanControl => "FanControl: нужны локальный pipe, абсолютный путь сервера и точный ID температуры; RPC читает кэш, время физического замера неизвестно",
             Family::Nvidia => "NVIDIA: PCI device ID должен содержать vendor 10DE и ненулевой device ID, отличный от FFFF",
             Family::Amd => "AMD: нужны AuthenticAMD, один сокет, семейство CPUID 17h–1Ah и абсолютный путь без пустых, служебных или псевдонимных компонентов",
             Family::Ddr5 => "DDR5: нужны контроллер PIIX4 (слово 2: младшие 32 бита 790B1022), база B00 для порта 0 или B20 для порта 1, SPD 50–57 и допустимый абсолютный путь",

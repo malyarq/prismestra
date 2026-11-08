@@ -61,6 +61,8 @@ impl Controller {
             pub fn name(&self) -> &str;
             /// Returns the type of this controller.
             pub fn device_type(&self) -> DeviceType;
+            /// Returns SDK controller flags when supplied by the protocol.
+            pub fn flags(&self) -> Option<crate::FlagSet<crate::ControllerFlags>>;
             /// Returns the vendor of this controller.
             pub fn vendor(&self) -> &str;
             /// Returns a description for this controller.

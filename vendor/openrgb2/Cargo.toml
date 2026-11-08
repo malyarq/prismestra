@@ -95,8 +95,8 @@ path = "examples/zone.rs"
 [dependencies.delegate]
 version = "0.13.4"
 
-[dependencies.flagset]
-version = "0.4.7"
+[dependencies.bitflags]
+version = "=2.13.2"
 
 [dependencies.rgb]
 version = "0.8.53"

@@ -27,6 +27,8 @@ pub enum Layout {
 }
 #[derive(Clone, Copy, Debug)]
 enum Family {
+    HomeAssistant,
+    OpenRgb,
     Wled,
     Door,
     Lcd,
@@ -44,6 +46,18 @@ pub struct Preset {
 }
 // Counts are the existing protocol capability tables, not discovered hardware.
 static BASE_PRESETS: &[Preset] = &[
+    Preset {
+        id: "home-assistant-light",
+        label: "Home Assistant · свет",
+        family: Family::HomeAssistant,
+        leds: 1,
+    },
+    Preset {
+        id: "openrgb-controller",
+        label: "OpenRGB · whole controller",
+        family: Family::OpenRgb,
+        leds: 1,
+    },
     Preset {
         id: "wled-ddp",
         label: "WLED · DDP",
@@ -124,12 +138,14 @@ impl Preset {
     }
     pub fn device_with_leds(&self, id: &str, leds: usize) -> Result<Device, String> {
         if leds != self.leds
-            && !matches!(self.family, Family::Wled)
+            && !matches!(self.family, Family::Wled | Family::OpenRgb)
             && !matches!(self.family,Family::Skydimo(model) if crate::transport::skydimo::model(model).is_some_and(|m|m.resizable))
         {
             return Err("Этот шаблон имеет фиксированное число LED".into());
         }
         let driver = match self.family {
+            Family::HomeAssistant => Driver::HomeAssistant,
+            Family::OpenRgb => Driver::OpenRgb,
             Family::Wled => Driver::WledDdp,
             Family::Door => Driver::DoorBle,
             Family::Lcd => Driver::TtLcd,
@@ -152,7 +168,11 @@ impl Preset {
             },
             driver,
             leds,
-            rate_hz: 25,
+            rate_hz: if matches!(self.family, Family::HomeAssistant) {
+                1
+            } else {
+                25
+            },
             enabled: false,
         };
         d.validate()?;
@@ -165,6 +185,65 @@ pub fn target(document: &Document, id: &str) -> Target {
     } else {
         Target::Pc
     }
+}
+
+/// Explicit Apply may adopt a newly discovered controller's complete geometry.
+/// An existing same-sized user layout is retained; this never opens a transport.
+pub fn adopt_openrgb(
+    document: &Document,
+    id: &str,
+    controller: &crate::transport::openrgb::ControllerInfo,
+) -> Result<Document, String> {
+    let mut device = document
+        .lighting
+        .setup
+        .devices
+        .iter()
+        .find(|d| d.id == id)
+        .ok_or("OpenRGB device was removed")?
+        .clone();
+    if controller.kind.eq_ignore_ascii_case("virtual") {
+        return Err("OpenRGB virtual controllers are excluded".into());
+    }
+    if device.driver != Driver::OpenRgb {
+        return Err("OpenRGB device family changed".into());
+    }
+    if device.leds == controller.leds {
+        return Ok(document.clone());
+    }
+    if device.role != Role::Canvas {
+        return Err("OpenRGB LED count changed: update the ambient route before Apply".into());
+    }
+    let points = crate::devices::openrgb::positions(controller)?;
+    device.leds = controller.leds;
+    let canvas = &document.lighting.setup.canvas;
+    let mut next = replace(
+        document,
+        id,
+        device,
+        target(document, id),
+        Some(Layout::Line {
+            x0: 0,
+            y0: 0,
+            x1: canvas.width - 1,
+            y1: 0,
+        }),
+    )?;
+    let xmax = points.iter().map(|p| p.0).max().unwrap_or(0).max(1) as u64;
+    let ymax = points.iter().map(|p| p.1).max().unwrap_or(0).max(1) as u64;
+    next.lighting.setup.canvas.points.retain(|p| p.device != id);
+    next.lighting
+        .setup
+        .canvas
+        .points
+        .extend(points.into_iter().enumerate().map(|(led, (x, y))| Point {
+            device: id.into(),
+            led,
+            x: ((x as u64 * u64::from(canvas.width - 1)) / xmax) as u32,
+            y: ((y as u64 * u64::from(canvas.height - 1)) / ymax) as u32,
+        }));
+    next.validate()?;
+    Ok(next)
 }
 fn group(document: &mut Document, id: &str, next: Target) {
     if target(document, id) == next

@@ -19,7 +19,7 @@ exclude = [".github/*", ".run/*"]
 
 [dependencies]
 delegate = "0.13.4"
-flagset = "0.4.7"
+bitflags = "=2.13.2"
 serde = { version = "1.0.229", features = ["derive"] }
 rgb = "0.8.53"
 thiserror = "2.0.20"

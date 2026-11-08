@@ -1,4 +1,4 @@
-use flagset::flags;
+use crate::sdk_flags as flags;
 
 use crate::{DeserFromBuf, ReceivedMessage};
 
