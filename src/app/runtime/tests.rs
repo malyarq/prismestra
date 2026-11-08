@@ -1392,6 +1392,13 @@ fn resume_without_suspend_drains_old_owner_and_duplicate_resume_keeps_refresh_ge
     wait(|| runtime.drained());
     runtime.tick(base + 7_001_000, wall()).unwrap();
     let generation = runtime.refresh;
+    // Let workers publish readiness without ticking the power coordinator again.
+    wait(|| runtime.outputs_ready() == Ok(true));
+    assert!(runtime.power.pending());
+    assert!(!runtime.temperature_input_ready());
+    let document = runtime.document().clone();
+    let outputs = runtime.output_plan();
+    assert!(runtime.request_outputs_for(document, outputs).is_err());
     runtime.notify_power(false, base + 7_002_000).unwrap();
     assert_eq!(runtime.refresh, generation);
     wait(|| {
@@ -1399,6 +1406,10 @@ fn resume_without_suspend_drains_old_owner_and_duplicate_resume_keeps_refresh_ge
         !runtime.power.pending()
     });
     assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert!(runtime.temperature_input_ready());
+    let document = runtime.document().clone();
+    let outputs = runtime.output_plan();
+    runtime.request_outputs_for(document, outputs).unwrap();
 }
 #[test]
 fn terminal_capture_invalidation_removes_old_host_color() {

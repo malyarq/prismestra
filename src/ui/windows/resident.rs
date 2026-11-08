@@ -941,7 +941,12 @@ pub(super) fn exercise(state: &State) -> Result<(), String> {
             return Err("Restored App did not receive queued power intent".into());
         }
         settle(state, "queued-simulated-resume", |a| {
-            a.runtime.outputs_ready() == Ok(true)
+            // Workers may become Ready before the owner completes its power transition.
+            a.runtime.read(|r| {
+                r.temperature_input_ready()
+                    && !r.pending_configuration()
+                    && r.outputs_ready() == Ok(true)
+            })
         })?;
     }
     {
