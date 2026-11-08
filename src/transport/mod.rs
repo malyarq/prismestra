@@ -11,7 +11,10 @@ pub mod feature_hid;
 pub mod feature_hid_windows;
 pub mod fusion2;
 #[cfg(windows)]
+pub mod home_assistant;
+#[cfg(windows)]
 pub(crate) mod nvapi_windows;
+pub mod openrgb;
 pub mod pawnio;
 pub mod pawnio_adapter;
 #[cfg(windows)]

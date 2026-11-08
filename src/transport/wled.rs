@@ -131,7 +131,7 @@ fn validate_target(target: SocketAddr) -> io::Result<()> {
 }
 
 fn validate_frame(rgb: &[u8], max_leds: usize) -> io::Result<()> {
-    if rgb.is_empty() || rgb.len() % 3 != 0 || rgb.len() / 3 > max_leds {
+    if rgb.is_empty() || !rgb.len().is_multiple_of(3) || rgb.len() / 3 > max_leds {
         return Err(invalid(
             "WLED frame must contain 1..=configured capacity RGB8 pixels",
         ));

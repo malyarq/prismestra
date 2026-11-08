@@ -1,0 +1,19 @@
+# Vendored openrgb2 0.4.1
+
+Source: [published crates.io archive](https://crates.io/api/v1/crates/openrgb2/0.4.1/download), retrieved 2026-11-08. Archive SHA-256: `47c1fe93fa91858f1685959af18b7136e8297c1efcf3267cd3727024afc325d7`. Published upstream is [Achtuur/openrgb-rs2](https://github.com/Achtuur/openrgb-rs2). The archive's `.cargo_vcs_info.json` records commit `5554922df02709d2928fc7662c3b3e40c73a12de` with `dirty: true`; the archive hash identifies the actual vendored input, which must not be represented as a pristine checkout. Package metadata says GPL-2.0; upstream LICENSE is retained unchanged.
+
+Local patches, limited to the SDK inventory/direct-output path:
+
+- `protocol/stream.rs`: reject packets above 1 MiB before allocation; invalidate the session on DeviceListUpdated, including queued notifications checked by nonconsuming `poll_peek` before mode/frame submission. Existing packet parsing handles those messages.
+- `protocol/serialize.rs`, vector/string/controller/matrix deserializers: bound individual collections to 8192 elements, controllers to 128, controller zones/modes to 256, strings to 4096 wire bytes; check remaining input before allocation, matrix multiplication overflow, and LED/color consistency.
+- `flags.rs`: tolerate future flags during inventory using `new_truncated`; unknown bits are ignored, not retained or interpreted.
+- DeviceType mapping extends Storage=14 through Unknown=21. DeviceType, ZoneType, Direction and ColorMode retain unknown numeric values for discovery and wire round-trip.
+- `client/controller.rs`: direct activation no longer depends on a valid active mode, rejects AutomaticSave modes and sends one builder result with max brightness rather than overwriting it with the previous mode data.
+- `protocol/mod.rs`: advertise only RGBControllerSupport, without local/admin or unused manager flags.
+- Matrix and zone accessors expose bounded matrix dimensions/cells and the effective output count of effects-only zones. Matrix byte lengths must agree with their dimensions.
+
+SDK6 preserves IDs for existing controllers and assigns increasing IDs to new controllers; it resolves IDs rather than list indexes and broadcasts DeviceListUpdated. See upstream OpenRGB 1.1 [ID assignment](https://github.com/CalcProgrammer1/OpenRGB/blob/release_1.1/NetworkServer.cpp#L682), [ID lookup](https://github.com/CalcProgrammer1/OpenRGB/blob/release_1.1/NetworkServer.cpp#L4444), [notification](https://github.com/CalcProgrammer1/OpenRGB/blob/release_1.1/NetworkServer.cpp#L4017), and [SDK specification](https://github.com/CalcProgrammer1/OpenRGB/blob/release_1.1/Documentation/OpenRGBSDK.md). This adapter requires SDK6. A notification racing an in-flight write invalidates the session while awaiting the server reply; an old ID cannot select a different controller merely because list order changed.
+
+Matrix indices are zone-local: OpenRGB's [DeviceView](https://github.com/CalcProgrammer1/OpenRGB/blob/release_1.1/qt/DeviceView.cpp#L1234) adds the zone start index before accessing controller LEDs. Effective zone offsets follow [LEDsInZone and SetupColors](https://github.com/CalcProgrammer1/OpenRGB/blob/release_1.1/RGBController/RGBController.cpp#L2326), including effects-only zones with at most one actual output. The adapter preserves holes and converts supported maps into controller-global indices. Virtual effects-only matrices retain their raw topology but expose an explicit warning and no physical matrix, allowing an honest linear fallback. It rejects malformed ordinary matrix indices and duplicates without requiring every LED to appear in the matrix.
+
+The independent harness tests this adapter without contacting real hardware. No init, EEPROM-save, profile, resize, rescan, or hardware test was performed.
