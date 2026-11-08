@@ -173,6 +173,13 @@ def main():
             json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     (binary / "START-HERE.md").write_text(
         "# Prismestra\n\nRun `Prismestra.exe` to open the editor.\n\n"
+        "Windows x64 builds require the x64 Visual C++ v14 runtime. "
+        "Microsoft's supported runtime downloads: "
+        "https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist"
+        "#latest-supported-redistributable-version\n\n"
+        "Closing the editor leaves the session in the tray. "
+        "Use its menu to reopen the editor, stop outputs or exit. "
+        "A second launch with the same settings directory shows a tray hint.\n\n"
         "Inspect and configure a supported connection before activating hardware. "
         "Keep your existing fan and pump control software.\n\n"
         "Device support and limitations: https://github.com/malyarq/prismestra/blob/"

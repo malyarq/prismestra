@@ -1,0 +1,63 @@
+{
+  "tested_on": "2026-11-09 Europe/Moscow",
+  "source_commit": "6839f1969ace1e11cee98f4392fc3d7ffea5a8a5",
+  "scope": "Bounded common Runtime integration probe using the real Windows transports and the existing OpenRGB server. Debug harness; resource comparison pending.",
+  "hardware_revision": "not recorded",
+  "firmware_revision": "not recorded",
+  "elapsed_ms": 40823,
+  "rgb": [
+    {
+      "logical_device": "sdk-01",
+      "submitted": 914,
+      "error": null
+    },
+    {
+      "logical_device": "sdk-02",
+      "submitted": 914,
+      "error": null
+    },
+    {
+      "logical_device": "sdk-03",
+      "submitted": 1020,
+      "error": null
+    },
+    {
+      "logical_device": "sdk-04",
+      "submitted": 573,
+      "error": null
+    },
+    {
+      "logical_device": "door-ble",
+      "submitted": 406,
+      "error": null
+    },
+    {
+      "logical_device": "skydimo-ambient",
+      "submitted": 1957,
+      "error": null
+    }
+  ],
+  "lcd_frames_acknowledged": 26,
+  "capture_ready": true,
+  "temperature_keys_present": [
+    "cpu",
+    "gpu",
+    "ram",
+    "liquid"
+  ],
+  "workers_drained": true,
+  "drain_ms": 146,
+  "legacy_producers_restored": true,
+  "prepared_inputs_unchanged": true,
+  "cooling_control_writes": 0,
+  "visible_device_acceptance": false,
+  "limitations": [
+    "RGB submissions are transport completions; they do not acknowledge visible LED state.",
+    "LCD acknowledgments do not establish visible pixels or overlay appearance.",
+    "Capture revisions are not a measured capture frame rate.",
+    "No performance comparison is claimed from these debug counts.",
+    "BLE spatial positions remain an uncalibrated uniform-color draft; one board LED also needs calibration.",
+    "Restored BLE connection does not establish restoration of the previous physical color; the legacy API does not expose it.",
+    "This record covers the integration probe; final packaged application acceptance is tracked separately."
+  ]
+}
