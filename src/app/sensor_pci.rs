@@ -1,6 +1,6 @@
 //! Serializable identity for read-only NVIDIA temperature sources.
-use serde::{Deserialize, Serialize};
 use crate::sensors::nvidia::PciIdentity;
+use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Pci {

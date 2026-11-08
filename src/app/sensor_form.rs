@@ -1,7 +1,7 @@
 //! Explicit, UI-neutral descriptor editing. No discovery, file reads or native calls.
 use super::{
-    sensor_pci::Pci,
     sensor_bindings::{Source, Target},
+    sensor_pci::Pci,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

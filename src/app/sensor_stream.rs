@@ -1,6 +1,6 @@
 //! Parent registry -> child observation codec. Metadata and original age only, never targets.
 //! Atomic validation clones clock state; no clock acquisition, native activation or I/O here.
-use super::{strict_json::unique_json, lcd, sensor_bindings::Scope, sensor_sessions};
+use super::{lcd, sensor_bindings::Scope, sensor_sessions, strict_json::unique_json};
 use crate::{
     clock::stream::{self, ReceivePair, SendPair, Stamp},
     runtime::output::Phase,

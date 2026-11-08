@@ -1,5 +1,8 @@
 //! Bounded JSON parsing with recursive duplicate-key rejection.
-use serde::{Deserialize, de::{self, MapAccess, SeqAccess, Visitor}};
+use serde::{
+    Deserialize,
+    de::{self, MapAccess, SeqAccess, Visitor},
+};
 use serde_json::Value;
 use std::fmt;
 

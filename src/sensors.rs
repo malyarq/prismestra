@@ -1,12 +1,12 @@
 //! Own read-only sensor capabilities; portable documents contain logical keys,
 //! while physical provider bindings remain separate local state.
-pub mod nvidia;
 pub mod amd;
+#[cfg(windows)]
+pub(crate) mod amd_windows;
 pub mod ddr5;
 #[cfg(windows)]
 pub(crate) mod ddr5_windows;
-#[cfg(windows)]
-pub(crate) mod amd_windows;
+pub mod nvidia;
 #[cfg(windows)]
 pub mod nvidia_windows;
 

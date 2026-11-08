@@ -1,8 +1,8 @@
 //! Bounded, metadata-only classification. No enumeration, module reads or sensor I/O.
 use super::{
-    sensor_pci::Pci,
     sensor_bindings::{Source, Target},
     sensor_form::{Draft, Family},
+    sensor_pci::Pci,
 };
 use crate::{
     lcd::hid_policy::{self, Descriptor, Kind},
