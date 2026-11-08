@@ -27,8 +27,8 @@ LICENSE_CHOICES = {
 }
 
 
-def run(*args, cwd):
-    return subprocess.check_output(args, cwd=cwd, text=True, encoding="utf-8").strip()
+def run(*args, cwd, env=None):
+    return subprocess.check_output(args, cwd=cwd, env=env, text=True, encoding="utf-8").strip()
 
 
 def clean_commit(repo, expected):
@@ -69,6 +69,14 @@ def sha256(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def notice_files(root):
+    paths = set()
+    for child in root.iterdir():
+        if child.name.upper().startswith(("LICENSE", "COPYING", "NOTICE", "COPYRIGHT", "AUTHORS")):
+            paths.update(child.rglob("*") if child.is_dir() else [child])
+    return sorted(path for path in paths if path.is_file())
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--expected-commit", required=True)
@@ -98,12 +106,13 @@ def main():
                         "vendor/dependencies", cwd=source)
     config.parent.mkdir(exist_ok=True)
     config.write_text(vendor_config + "\n", encoding="utf-8")
+    build_env = os.environ.copy()
+    build_env["CARGO_HOME"] = str(stage / "offline-cargo-home")
+    build_env["CARGO_ENCODED_RUSTFLAGS"] = f"--remap-path-prefix={source}=."
     metadata = json.loads(run("cargo", "metadata", "--locked", "--offline",
-                              "--format-version", "1", cwd=source))
+                              "--format-version", "1", cwd=source, env=build_env))
     packages = inventory(metadata)
     build = stage / "build"
-    build_env = os.environ.copy()
-    build_env["CARGO_ENCODED_RUSTFLAGS"] = f"--remap-path-prefix={source}=."
     subprocess.run(["cargo", "build", "--release", "--locked", "--offline",
                     "--target", target, "--target-dir", str(build),
                     "--bin", "pc-control-ui"], cwd=source, env=build_env, check=True)
@@ -116,14 +125,24 @@ def main():
     notices = binary / "licenses"
     for package in metadata["packages"]:
         root = Path(package["manifest_path"]).parent
-        candidates = set(root.glob("LICENSE*")) | set(root.glob("COPYING*")) | set(root.glob("NOTICE*"))
+        candidates = set(notice_files(root))
         if package.get("license_file"):
             candidates.add(root / package["license_file"])
+        supplement = source / "third-party-notices" / f"{package['name']}-{package['version']}"
+        supplemental = notice_files(supplement) if supplement.exists() else []
+        if not candidates and not supplemental:
+            raise ValueError(f"Missing release notices: {package['name']}")
         for path in sorted(candidates):
             if path.is_file():
-                destination = notices / f"{package['name']}-{package['version']}" / path.name
+                destination = notices / f"{package['name']}-{package['version']}" / path.resolve().relative_to(root.resolve())
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(path, destination)
+        for path in supplemental:
+            destination = notices / supplement.name / path.relative_to(supplement)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists() and destination.read_bytes() != path.read_bytes():
+                raise ValueError(f"Conflicting release notices: {package['name']}")
+            shutil.copy2(path, destination)
     for path in (source / "src").rglob("*-LICENSE*"):
         destination = notices / "project" / path.relative_to(source)
         destination.parent.mkdir(parents=True, exist_ok=True)

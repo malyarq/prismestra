@@ -11,7 +11,7 @@ python scripts/package_release.py --expected-commit $releaseCommit --output C:\b
 
 The output directory must not already exist. Use a location outside the checkout or inside its ignored `target` directory. A failed attempt leaves its staging files for inspection; choose a new directory when retrying.
 
-The script archives tracked files at the expected commit, vendors the locked registry dependencies, adds a local Cargo source replacement, and builds that source snapshot offline. It rejects a dirty checkout and custom Rust flags, remaps source paths in compiled diagnostics, and checks HEAD again after building. The source archive excludes build outputs and local configuration. See the [implementation](../scripts/package_release.py).
+The script archives tracked files at the expected commit, vendors the locked registry dependencies, adds a local Cargo source replacement, and builds that source snapshot offline with a fresh Cargo home. It rejects a dirty checkout and custom Rust flags, remaps source paths in compiled diagnostics, and checks HEAD again after building. The source archive excludes build outputs and local configuration. See the [implementation](../scripts/package_release.py).
 
 Distribute these files together:
 

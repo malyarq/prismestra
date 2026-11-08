@@ -59,6 +59,17 @@ class PackageChecks(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 release.write_zip(selected, archive)
 
+    def test_authors_grants_and_nested_license_notices_are_retained(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "AUTHORS").write_text("copyright and permission", encoding="utf-8")
+            nested = root / "LICENSES"
+            nested.mkdir()
+            (nested / "MIT.txt").write_text("MIT text", encoding="utf-8")
+            (root / "unrelated.rs").write_text("source", encoding="utf-8")
+            self.assertEqual([p.relative_to(root).as_posix() for p in release.notice_files(root)],
+                             ["AUTHORS", "LICENSES/MIT.txt"])
+
 
 if __name__ == "__main__":
     unittest.main()
