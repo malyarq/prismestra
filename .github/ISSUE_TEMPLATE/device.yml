@@ -1,0 +1,34 @@
+name: Device report
+description: Report an exact device, connection mode and observed behavior.
+title: "[Device] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Report only what you tested. Remove tokens, serial numbers, MAC addresses, private addresses and personal paths from attachments.
+  - type: input
+    id: device
+    attributes:
+      label: Device and revision
+      description: Exact model, hardware revision and firmware, where known.
+    validations:
+      required: true
+  - type: input
+    id: connection
+    attributes:
+      label: Connection and backend
+      description: USB, dongle, BLE or network; OpenRGB/WLED/HA version if applicable.
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: What happened
+      description: Include the commit/build, Windows version, steps, expected and actual result. Distinguish discovery, activation, color, animation, stop and reconnect.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted evidence
+      description: Logs or a photo can help. An API response alone does not confirm that the physical light changed.

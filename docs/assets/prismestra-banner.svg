@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="title desc">
+<title id="title">Prismestra</title>
+<desc id="desc">One local lighting scene connects a PC, a Bluetooth strip, an LCD and home lights.</desc>
+<defs>
+  <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#0b1120"/><stop offset="1" stop-color="#151c2e"/></linearGradient>
+  <linearGradient id="beam"><stop stop-color="#74e4ea"/><stop offset=".5" stop-color="#b3a7ff"/><stop offset="1" stop-color="#ffc283"/></linearGradient>
+  <linearGradient id="prism" x2=".8" y2="1"><stop stop-color="#a4edff" stop-opacity=".28"/><stop offset="1" stop-color="#b8a2ff" stop-opacity=".05"/></linearGradient>
+  <pattern id="grid" width="36" height="36" patternUnits="userSpaceOnUse"><path d="M36 0H0V36" fill="none" stroke="#93a7cd" stroke-opacity=".045"/></pattern>
+</defs>
+<rect width="1200" height="360" rx="18" fill="url(#bg)"/>
+<rect width="1200" height="360" rx="18" fill="url(#grid)"/>
+<path d="M0 359H1200" stroke="url(#beam)" stroke-opacity=".65"/>
+<g font-family="Segoe UI,Arial,sans-serif">
+  <text x="64" y="86" fill="#92a3bf" font-size="12" letter-spacing="3">LOCAL LIGHTING ORCHESTRATION</text>
+  <text x="60" y="167" fill="#f4f6ff" font-size="66" font-weight="650" letter-spacing="-2">Prismestra</text>
+  <text x="64" y="209" fill="#b6c3d9" font-size="20">Different devices. One scene.</text>
+  <g font-size="11" letter-spacing="1.2" fill="#c4d1e5">
+    <rect x="64" y="251" width="88" height="29" rx="14.5" fill="#a5b8d1" fill-opacity=".08" stroke="#a5b8d1" stroke-opacity=".15"/>
+    <text x="84" y="270">WINDOWS</text>
+    <rect x="163" y="251" width="68" height="29" rx="14.5" fill="#a5b8d1" fill-opacity=".08" stroke="#a5b8d1" stroke-opacity=".15"/>
+    <text x="180" y="270">RUST</text>
+    <rect x="242" y="251" width="79" height="29" rx="14.5" fill="#a5b8d1" fill-opacity=".08" stroke="#a5b8d1" stroke-opacity=".15"/>
+    <text x="260" y="270">LOCAL</text>
+  </g>
+</g>
+<g fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M610 180H723" stroke="url(#beam)" stroke-width="2"/>
+  <path d="M771 173C833 173 839 77 913 77H990" stroke="#79dedb" stroke-width="1.6"/>
+  <path d="M776 181H1003" stroke="#b4a6ff" stroke-width="1.6"/>
+  <path d="M769 192C832 192 853 275 913 275H990" stroke="#ffc18a" stroke-width="1.6"/>
+  <path d="M757 111L709 204H805Z" stroke="#b7cef4" stroke-opacity=".72" fill="url(#prism)" stroke-width="1.5"/>
+  <path d="M757 111V173L805 204M757 173L709 204" stroke="#b7cef4" stroke-opacity=".27"/>
+  <g stroke="#79dedb" stroke-width="1.6">
+    <rect x="1002" y="49" width="55" height="58" rx="6"/>
+    <circle cx="1029.5" cy="68" r="9"/>
+    <circle cx="1029.5" cy="91" r="9"/>
+    <path d="M1075 58V98M1083 58V98M1091 58V98" stroke-opacity=".6"/>
+  </g>
+  <g stroke="#b4a6ff" stroke-width="1.6">
+    <rect x="1003" y="153" width="88" height="55" rx="6"/>
+    <path d="M1015 192L1034 174L1049 184L1067 168L1079 180" stroke-opacity=".6"/>
+    <path d="M1028 217H1066M1047 208V217"/>
+  </g>
+  <g stroke="#ffc18a" stroke-width="1.6">
+    <path d="M1006 280V261L1029 245L1052 261V280Z"/>
+    <path d="M1022 280V266H1036V280" stroke-opacity=".6"/>
+    <path d="M1071 267C1071 259 1084 259 1084 267C1084 272 1080 272 1080 277H1075C1075 272 1071 272 1071 267ZM1075 282H1080"/>
+  </g>
+</g>
+<g font-family="Segoe UI,Arial,sans-serif" font-size="10" letter-spacing="1.4" fill="#7f91ad">
+  <text x="1003" y="128">PC / BLE</text><text x="1004" y="238">LCD</text><text x="1004" y="306">HOME</text>
+</g>
+</svg>

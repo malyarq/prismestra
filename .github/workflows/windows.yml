@@ -1,0 +1,33 @@
+name: Windows checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  software:
+    name: Rust software checks
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install stable Rust
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Check all targets
+        run: cargo check --locked --all-targets
+      - name: Test without physical devices
+        run: cargo test --locked -- --test-threads=1
+      - name: Check Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
