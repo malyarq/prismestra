@@ -66,6 +66,8 @@ The [Windows workflow](.github/workflows/windows.yml) checks software behavior w
 
 To report a device or help add one, start with [contributing](CONTRIBUTING.md). A precise model, revision, firmware and connection mode are more useful than a vendor-wide support request.
 
+Maintainers can build a package with its exact source, dependency sources, licenses and checksums using the [release instructions](docs/releasing.md).
+
 ## Upstream work and license
 
 | Component | Use | License / source |

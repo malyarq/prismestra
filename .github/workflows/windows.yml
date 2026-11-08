@@ -25,6 +25,8 @@ jobs:
           rustup default stable
       - name: Check formatting
         run: cargo fmt --all -- --check
+      - name: Check release packaging boundaries
+        run: python scripts/test_package_release.py
       - name: Check all targets
         run: cargo check --locked --all-targets
       - name: Test without physical devices
