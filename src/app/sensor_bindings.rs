@@ -70,6 +70,11 @@ fn module_path(path: &str) -> Result<(), String> {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Target {
+    FanControl {
+        pipe_name: String,
+        expected_server: String,
+        sensor_id: String,
+    },
     Nvidia {
         pci: Pci,
     },
@@ -136,6 +141,21 @@ impl Target {
     }
     pub fn validate(&self) -> Result<(), String> {
         match self {
+            Self::FanControl {
+                pipe_name,
+                expected_server,
+                sensor_id,
+            } => {
+                let tail = pipe_name
+                    .strip_prefix(r"\\.\pipe\")
+                    .ok_or("Only a local FanControl pipe is allowed")?;
+                if tail.is_empty() || tail.contains(['\\', '/']) || pipe_name.len() > 256 {
+                    return Err("Invalid FanControl pipe name".into());
+                }
+                identity(pipe_name)?;
+                identity(sensor_id)?;
+                module_path(expected_server)
+            }
             Self::Nvidia { .. } => self.nvidia_binding().map(|_| ()),
             Self::Amd {
                 module_path: path, ..
@@ -163,6 +183,18 @@ impl Target {
     pub fn resource_keys(&self) -> Result<Vec<String>, String> {
         self.validate()?;
         Ok(vec![match self {
+            // The cache RPC is read-only; each exact selected sensor owns its session.
+            Self::FanControl {
+                pipe_name,
+                sensor_id,
+                ..
+            } => format!(
+                "sensor:fancontrol:{}",
+                hash(
+                    &serde_json::to_vec(&(pipe_name.to_ascii_lowercase(), sensor_id))
+                        .map_err(|e| e.to_string())?
+                )
+            ),
             Self::Nvidia { pci } => format!(
                 "sensor:nvapi:{:08x}:{:08x}:{:08x}:{:08x}",
                 pci.device_id, pci.subsystem_id, pci.revision_id, pci.extended_device_id
@@ -187,6 +219,14 @@ impl Target {
         self.validate()?;
         let mut normalized = self.clone();
         match &mut normalized {
+            Self::FanControl {
+                pipe_name,
+                expected_server,
+                ..
+            } => {
+                *pipe_name = pipe_name.to_ascii_lowercase();
+                *expected_server = normalize_path(expected_server);
+            }
             Self::Amd { module_path, .. } | Self::Ddr5 { module_path, .. } => {
                 *module_path = normalize_path(module_path)
             }

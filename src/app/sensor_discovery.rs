@@ -52,6 +52,9 @@ fn display(value: &str) -> String {
 fn key(target: &Target) -> String {
     // Generated IDs are persisted: use an explicit numeric format, not Debug output.
     match target {
+        Target::FanControl { .. } => {
+            format!("fancontrol:{}", target.canonical_key().unwrap_or_default())
+        }
         Target::Nvidia { pci } => format!(
             "nvidia:{:08x}:{:08x}:{:08x}:{:08x}",
             pci.device_id, pci.subsystem_id, pci.revision_id, pci.extended_device_id
@@ -108,7 +111,7 @@ impl Inventory {
             return Err("Invalid inventory issue".into());
         }
         let mut ids = BTreeSet::new();
-        let mut families = [0_usize; 4];
+        let mut families = [0_usize; 5];
         for c in &self.candidates {
             if c.id.len() != 71
                 || !c.id.starts_with("sensor-")
@@ -136,6 +139,7 @@ impl Inventory {
                     Family::Amd => 1,
                     Family::Ddr5 => 2,
                     Family::Liquid => 3,
+                    Family::FanControl => 4,
                 };
                 families[family] += 1;
                 if families[family] > MAX_FAMILY {

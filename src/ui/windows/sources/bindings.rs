@@ -1,5 +1,5 @@
 //! Application-owned read subscriptions; the optional resolver is an explicit code capability.
-//! No native resolver or synthetic default is created by this UI.
+//! Native factories are resolved only after explicit Start and scope preflight.
 use super::*;
 use crate::app::sensor_bindings::Resolved;
 pub(super) const START: i32 = 1150;
@@ -44,6 +44,7 @@ impl App {
         self.pos(STATE, right, 412, width, 112);
         if let Some(slot) = match self.sources.draft.family {
             Family::Amd => Some(3),
+            Family::FanControl => Some(1),
             Family::Ddr5 => Some(5),
             _ => None,
         } {
@@ -71,11 +72,21 @@ impl App {
             } else {
                 "Активные привязки отличаются от сохранённых. Для применения остановите эту задачу и запустите её снова.".into()
             }
-        } else if self.sources.resolver.is_none() {
+        } else if self.sources.resolver.is_none() && !self.sources.native_allowed {
             "Чтение не разрешено в режиме предпросмотра. Сохранение профиля и привязок не включает оборудование.".into()
         } else {
             "Чтение не запущено. Будут использованы только явные привязки текущего профиля; недостающие показания не подставляются.".into()
         };
+        if active.is_some_and(|a| {
+            a.routes.iter().any(|r| {
+                matches!(
+                    r.target,
+                    crate::app::sensor_bindings::Target::FanControl { .. }
+                )
+            })
+        }) {
+            text.push_str("\r\nFanControl возвращает кэш; возраст ответа не подтверждает время физического замера.");
+        }
         if let Some(active) = active {
             let selected =
                 usize::try_from(unsafe { SendMessageW(self.h(LIST), LB_GETCURSEL, 0, 0) })
@@ -170,7 +181,7 @@ impl App {
                 self.h(START),
                 i32::from(
                     !running
-                        && self.sources.resolver.is_some()
+                        && (self.sources.resolver.is_some() || self.sources.native_allowed)
                         && !self.shutdown.active()
                         && self.runtime.temperature_input_ready(),
                 ),
@@ -193,6 +204,11 @@ impl App {
 
         if self.sources.lighting.is_some() {
             return Err("Чтение этого профиля уже запущено.".into());
+        }
+        if self.sources.resolver.is_none() && self.sources.native_allowed {
+            self.sources.resolver = Some(Box::new(
+                crate::app::sensor_sessions::NativeResolver::explicit_user_start(),
+            ));
         }
         let resolver = self
             .sources
@@ -253,22 +269,42 @@ pub(super) fn module_dialog(hwnd: HWND, state: &State) -> Result<(), String> {
             || a.page != Page::Sources
             || a.source_routes_mode()
             || a.source_discovery_mode()
-            || !matches!(a.read_source_draft().family, Family::Amd | Family::Ddr5)
+            || !matches!(
+                a.read_source_draft().family,
+                Family::Amd | Family::Ddr5 | Family::FanControl
+            )
         {
-            return Err("Откройте форму датчика AMD или DDR5.".into());
+            return Err("Откройте форму AMD, DDR5 или FanControl.".into());
         }
         a.read_source_draft()
     };
     let Some(path) = file_dialog(
         hwnd,
         false,
-        "Модули PawnIO (*.bin)\0*.bin\0Все файлы\0*.*\0\0",
-        "bin",
+        if draft.family == Family::FanControl {
+            "Приложения (*.exe)\0*.exe\0Все файлы\0*.*\0\0"
+        } else {
+            "Модули PawnIO (*.bin)\0*.bin\0Все файлы\0*.*\0\0"
+        },
+        if draft.family == Family::FanControl {
+            "exe"
+        } else {
+            "bin"
+        },
     )?
     else {
         return Ok(());
     };
-    let edited = crate::app::sensor_modules::select(&draft, &path)?;
+    let edited = if draft.family == Family::FanControl {
+        let mut next = draft.clone();
+        next.values[1] = path
+            .to_str()
+            .ok_or("Путь FanControl не поддерживается")?
+            .into();
+        next
+    } else {
+        crate::app::sensor_modules::select(&draft, &path)?
+    };
     let mut slot = state.app.try_borrow_mut().map_err(|_| "UI занято")?;
     let a = slot.as_mut().ok_or("UI не создан")?;
     if a.shutdown.active()
@@ -281,8 +317,11 @@ pub(super) fn module_dialog(hwnd: HWND, state: &State) -> Result<(), String> {
     }
     a.sources.draft = edited;
     a.fill_source_draft();
-    a.status =
+    a.status = if draft.family == Family::FanControl {
+        "Путь сервера выбран. Он будет сверяться при чтении; программа и RPC не запускались.".into()
+    } else {
         "Размер и SHA-256 модуля проверены. Сохраните датчик; драйвер и модуль не запускались."
-            .into();
+            .into()
+    };
     Ok(())
 }

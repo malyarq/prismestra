@@ -2681,6 +2681,9 @@ pub fn run(args: Vec<OsString>) -> Result<(), String> {
     }
     result
 }
+fn native_sources_allowed(snapshot: bool, selftest: bool) -> bool {
+    !snapshot && !selftest
+}
 fn run_inner(args: Vec<OsString>) -> Result<(), String> {
     let o = options(args)?;
     let state_dir = if let Some(path) = &o.state_dir {
@@ -2857,8 +2860,10 @@ fn run_inner(args: Vec<OsString>) -> Result<(), String> {
             app.open_connections()?;
         }
 
-        app.sources.scan_factory = o
-            .allow_sensor_discovery
+        // Merely grant capabilities here; neither metadata nor readers run at load.
+        let native_sources = native_sources_allowed(o.snapshot.is_some(), o.selftest);
+        app.sources.native_allowed = native_sources;
+        app.sources.scan_factory = (native_sources || o.allow_sensor_discovery)
             .then(crate::app::sensor_discovery_windows::native_factory);
         if app.sources.scan_factory.is_some() {
             app.sources.scan_message =
@@ -3903,5 +3908,16 @@ mod tests {
         assert_eq!(read.scene.brightness, 31);
         assert_eq!(extended.unwrap().temperatures, document.temperatures);
         assert_eq!(document.lighting.scene.brightness, 60);
+    }
+}
+
+#[cfg(test)]
+mod sensor_access_tests {
+    #[test]
+    fn only_ordinary_mode_grants_dormant_native_source_capabilities() {
+        assert!(super::native_sources_allowed(false, false));
+        for (snapshot, selftest) in [(true, false), (false, true), (true, true)] {
+            assert!(!super::native_sources_allowed(snapshot, selftest));
+        }
     }
 }
