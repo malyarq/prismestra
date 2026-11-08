@@ -197,6 +197,7 @@ fn native(target: Target, cancel: Cancellation) -> Result<Inventory, String> {
                     }
                     out.issues.push("Порты не открывались. Модель и HEX ID контроллера требуют отдельной проверки; CH340 не означает Skydimo.".into());
                 }
+                Driver::WledDdp=>out.issues.push("WLED: укажите известный IP и порт DDP (обычно 4048). Автопоиск не отправляет команды; UDP-передача не подтверждает физический вывод.".into()),
                 Driver::DoorBle=>out.issues.push("Автопоиск BLE пока не реализован. Введите MAC известного совместимого контроллера; подключение не выполняется при сохранении.".into()),
                 Driver::EneDram=>out.issues.push("Автопоиск ENE/SMBus не выполняется. Нужны путь проверенного модуля PawnIO и адрес 0x70..0x76.".into()),
                 Driver::Unsupported{..}=>out.issues.push("Этот протокол пока не поддерживается.".into()),

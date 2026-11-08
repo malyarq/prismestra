@@ -188,11 +188,23 @@ impl Editor {
                 d.enabled,
                 "Разрешение в профиле; само по себе не подключает оборудование.",
             ),
-            field("rate", "Частота", d.rate_hz, "1..144 Гц"),
+            field(
+                "rate",
+                "Частота",
+                d.rate_hz,
+                if matches!(d.driver, crate::devices::Driver::WledDdp) {
+                    "WLED: 1..60 Гц; максимум 1 МБ RGB/с на выход"
+                } else {
+                    "1..144 Гц"
+                },
+            ),
             group,
             preset,
         ];
-        if matches!(d.driver, crate::devices::Driver::SkydimoSerial { .. }) {
+        if matches!(
+            d.driver,
+            crate::devices::Driver::SkydimoSerial { .. } | crate::devices::Driver::WledDdp
+        ) {
             let mut role = field(
                 "role",
                 "Назначение",
@@ -499,7 +511,10 @@ impl Editor {
         let mut target = device_setup::target(&self.document, &d.id);
         match key {
             "role" => {
-                if !matches!(d.driver, crate::devices::Driver::SkydimoSerial { .. }) {
+                if !matches!(
+                    d.driver,
+                    crate::devices::Driver::SkydimoSerial { .. } | crate::devices::Driver::WledDdp
+                ) {
                     return Err("Для этого семейства нельзя сменить назначение".into());
                 }
                 let role = match value {

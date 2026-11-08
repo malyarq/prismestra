@@ -16,6 +16,10 @@ pub struct Draft {
 impl Draft {
     pub fn from_binding(binding: &Binding) -> Self {
         match binding {
+            Binding::WledDdp { endpoint } => Self {
+                endpoint: endpoint.to_string(),
+                ..Self::default()
+            },
             Binding::Ble { address } => Self {
                 endpoint: format!("{address:012X}"),
                 ..Self::default()
@@ -54,6 +58,13 @@ impl Draft {
         }
         let endpoint = self.endpoint.trim().to_owned();
         let binding = match device.driver {
+            Driver::WledDdp => Binding::WledDdp {
+                endpoint: crate::devices::canonical_endpoint(
+                    endpoint
+                        .parse()
+                        .map_err(|_| "Введите IP:порт DDP, например 192.168.1.20:4048")?,
+                ),
+            },
             Driver::DoorBle => {
                 let mac = endpoint.replace([':', '-'], "");
                 if mac.len() != 12 || !mac.bytes().all(|c| c.is_ascii_hexdigit()) {

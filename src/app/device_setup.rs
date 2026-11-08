@@ -27,6 +27,7 @@ pub enum Layout {
 }
 #[derive(Clone, Copy, Debug)]
 enum Family {
+    Wled,
     Door,
     Lcd,
     Ene,
@@ -43,6 +44,12 @@ pub struct Preset {
 }
 // Counts are the existing protocol capability tables, not discovered hardware.
 static BASE_PRESETS: &[Preset] = &[
+    Preset {
+        id: "wled-ddp",
+        label: "WLED · DDP",
+        family: Family::Wled,
+        leds: 60,
+    },
     Preset {
         id: "door20",
         label: "Door BLE · 20",
@@ -117,11 +124,13 @@ impl Preset {
     }
     pub fn device_with_leds(&self, id: &str, leds: usize) -> Result<Device, String> {
         if leds != self.leds
+            && !matches!(self.family, Family::Wled)
             && !matches!(self.family,Family::Skydimo(model) if crate::transport::skydimo::model(model).is_some_and(|m|m.resizable))
         {
             return Err("Этот шаблон имеет фиксированное число LED".into());
         }
         let driver = match self.family {
+            Family::Wled => Driver::WledDdp,
             Family::Door => Driver::DoorBle,
             Family::Lcd => Driver::TtLcd,
             Family::Ene => Driver::EneDram,

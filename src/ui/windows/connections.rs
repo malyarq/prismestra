@@ -338,6 +338,7 @@ impl App {
         let label = match self.connections.current() {
             Some(BindingTarget::Monitor(_)) => r"Экран Windows (например, \\.\DISPLAY1)",
             Some(BindingTarget::Device(d)) => match d.driver {
+                crate::devices::Driver::WledDdp => "IP:порт WLED DDP (обычно 4048)",
                 crate::devices::Driver::DoorBle => "MAC Bluetooth-контроллера",
                 crate::devices::Driver::EneDram => "Проверенный модуль PawnIO",
                 crate::devices::Driver::SkydimoSerial { .. } => "COM-порт контроллера",
@@ -384,6 +385,9 @@ impl App {
         } else {
             let hint = match self.connections.current() {
                 Some(BindingTarget::Device(d)) => match d.driver {
+                    crate::devices::Driver::WledDdp => {
+                        "IP:4048 и число LED из WLED. UDP не подтверждает свечение."
+                    }
                     crate::devices::Driver::DoorBle => {
                         "Укажите MAC-адрес ленты. Автоматический поиск для этого протокола не поддерживается."
                     }

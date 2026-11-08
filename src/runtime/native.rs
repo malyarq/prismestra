@@ -48,6 +48,15 @@ pub fn bound_factory(
         .clone();
     let keys = binding.endpoint_keys();
     let factory: Factory = match (device.driver, binding) {
+        (Driver::WledDdp, Binding::WledDdp { endpoint }) => Arc::new(move |cancel| {
+            if cancel.cancelled() {
+                return Err("RGB output stopping".into());
+            }
+            Ok(Box::new(super::network::Wled::connect(
+                endpoint,
+                device.leds,
+            )?))
+        }),
         (
             Driver::SkydimoSerial { model },
             Binding::Serial {
@@ -121,7 +130,9 @@ pub fn bound_factory(
             Ok(Box::new(adapters::Ene::new(bus, address)?))
         }),
         _ => {
-            return Err("This device requires an unsupported or separate non-RGB controller".into());
+            return Err(
+                "This device requires an unsupported or separate non-RGB controller".into(),
+            );
         }
     };
     Ok((keys, factory))

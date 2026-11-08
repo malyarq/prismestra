@@ -6,6 +6,7 @@ pub(crate) mod cadence_wait;
 pub mod frame_feed;
 #[cfg(windows)]
 pub mod native;
+pub mod network;
 pub mod output;
 pub mod scene;
 use crate::{

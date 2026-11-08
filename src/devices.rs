@@ -31,6 +31,7 @@ pub enum Role {
 pub enum Driver {
     SkydimoSerial { model: String },
     DoorBle,
+    WledDdp,
     TtLcd,
     Fusion2 { headers: [usize; 2] },
     EneDram,
@@ -71,6 +72,21 @@ impl Device {
             return Err("Invalid device ID, label, rate or LED bound".into());
         }
         match &self.driver {
+            Driver::WledDdp => {
+                if !matches!(self.role, Role::Canvas | Role::Ambient)
+                    || !(1..=65_535).contains(&self.leds)
+                    || self.rate_hz > 60
+                    || self
+                        .leds
+                        .saturating_mul(3)
+                        .saturating_mul(self.rate_hz as usize)
+                        > 1_000_000
+                {
+                    return Err(
+                        "WLED requires 1..65535 LEDs, at most 60 Hz and 1 MB/s per endpoint".into(),
+                    );
+                }
+            }
             Driver::Fusion2 { headers } => {
                 fusion2::count_code(headers[0])?;
                 fusion2::count_code(headers[1])?;
@@ -220,6 +236,9 @@ impl Setup {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Binding {
+    WledDdp {
+        endpoint: std::net::SocketAddr,
+    },
     Serial {
         port: String,
         instance_id: String,
@@ -239,9 +258,20 @@ pub enum Binding {
 }
 pub type Bindings = BTreeMap<String, Binding>;
 
+pub(crate) fn canonical_endpoint(endpoint: std::net::SocketAddr) -> std::net::SocketAddr {
+    match endpoint {
+        std::net::SocketAddr::V4(_) => endpoint,
+        std::net::SocketAddr::V6(v6) if v6.ip().to_ipv4_mapped().is_some() => {
+            std::net::SocketAddr::new(endpoint.ip().to_canonical(), endpoint.port())
+        }
+        _ => endpoint,
+    }
+}
+
 impl Binding {
     pub(crate) fn endpoint_keys(&self) -> Vec<String> {
         match self {
+            Self::WledDdp { endpoint } => vec![format!("wled:{}", canonical_endpoint(*endpoint))],
             Self::Serial {
                 port, instance_id, ..
             } => vec![
@@ -256,6 +286,18 @@ impl Binding {
     pub fn validate(&self, device: &Device) -> Result<(), String> {
         device.validate()?;
         match (self, &device.driver) {
+            (Self::WledDdp { endpoint }, Driver::WledDdp) => {
+                let ip = endpoint.ip().to_canonical();
+                if endpoint.port() == 0
+                    || ip.is_unspecified()
+                    || ip.is_multicast()
+                    || ip == std::net::IpAddr::V4(std::net::Ipv4Addr::BROADCAST)
+                {
+                    return Err("WLED requires an explicit unicast IP and nonzero UDP port".into());
+                }
+                Ok(())
+            }
+
             (
                 Self::Serial {
                     port,
