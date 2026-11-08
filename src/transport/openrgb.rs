@@ -145,7 +145,14 @@ fn describe(c: &Controller) -> OpenRgbResult<ControllerInfo> {
         vendor: c.vendor().into(),
         serial: c.serial().into(),
         location: c.location().into(),
-        kind: format!("{:?}", c.device_type()),
+        kind: if c
+            .flags()
+            .is_some_and(|flags| flags.contains(openrgb2::ControllerFlags::IsVirtual))
+        {
+            "Virtual".into()
+        } else {
+            format!("{:?}", c.device_type())
+        },
         leds: c.colors().len(),
         led_names: c.led_iter().map(|l| l.name().to_owned()).collect(),
         zones,
