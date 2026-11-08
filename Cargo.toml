@@ -1,0 +1,28 @@
+[package]
+name = "pc-control"
+default-run = "pc-control-ui"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-or-later"
+publish = false
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+chrono-tz = "0.10"
+image = { version = "0.25", default-features = false, features = ["gif", "png", "jpeg", "bmp"] }
+jpeg-encoder = "0.7"
+tiny-skia = { version = "0.12", default-features = false, features = ["std", "simd"] }
+fontdue = "0.9"
+sha2 = "0.11"
+zip = { version = "9.4.0", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "=0.62.2", features = ["Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Direct3D", "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_StationsAndDesktops", "Win32_System_Threading", "Devices_Bluetooth", "Devices_Bluetooth_Advertisement", "Devices_Bluetooth_GenericAttributeProfile", "Foundation", "Foundation_Collections", "Storage_Streams", "Win32_System_WinRT"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Threading", "Win32_Devices_HumanInterfaceDevice", "Win32_Devices_DeviceAndDriverInstallation", "Win32_System_Diagnostics_ToolHelp", "Win32_Devices_Communication", "Win32_System_Registry", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls", "Win32_UI_Controls_Dialogs", "Win32_UI_HiDpi", "Win32_System_LibraryLoader", "Win32_System_SystemInformation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_System_Com", "Win32_Security_Authorization"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

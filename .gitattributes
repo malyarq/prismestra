@@ -1,0 +1,4 @@
+# Final empty TSV columns are semantic data; preserve the native fixture bytes.
+src/transport/fixtures/skydimo-native.tsv -text whitespace=-blank-at-eol
+# CPU oracle JSON is byte-pinned, including its final LF, on every checkout.
+src/cooling/fixtures/nvapi-cooler*-native.json -text

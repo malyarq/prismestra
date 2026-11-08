@@ -1,0 +1,4 @@
+#include "../../../../rgb-openrgb-2026-11-05/effects-source/OpenRGB/qt/hsv.h"
+#include <fstream>
+#include <cmath>
+int main(){std::ofstream out("patterns-fixtures.bin",std::ios::binary);unsigned int colors[]={0x0055ff,0x00c8ff,0x0000c8};for(int speed:{10,100,200})for(int fps:{10,48,60,144}){float progress=3.14159;hsv_t current;int index=0;for(int frame=0;frame<1000;frame++){progress+=((speed/100.0)/(float)fps);if(progress>=3.14159){progress-=3.14159;rgb2hsv(colors[index],&current);index=(index+1)%3;}current.value=pow(sin(progress),3)*255;auto c=hsv2rgb(&current);out.write((char*)&c,4);}}for(int speed:{1,40,100})for(int fps:{10,48,60,144}){float progress=0;for(int frame=0;frame<1000;frame++){for(int pos=0;pos<8;pos++){hsv_t h;h.hue=(int)((progress+pos)*10);h.saturation=255;h.value=255;auto c=hsv2rgb(&h);out.write((char*)&c,4);}if(progress<360)progress+=float(float(speed)/float(fps));else progress=0;}}return out.good()?0:1;}

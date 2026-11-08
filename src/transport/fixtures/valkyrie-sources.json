@@ -1,0 +1,42 @@
+[
+  {
+    "path": "OpenRGB-1.1/Controllers/ValkyrieKeyboardController/ValkyrieKeyboardController.cpp",
+    "sha256": "139541808c12f7e9e7253f4c55ca6535f88447e1ff869bbf724f4e714f3809b2"
+  },
+  {
+    "path": "OpenRGB-1.1/Controllers/ValkyrieKeyboardController/ValkyrieKeyboardController.h",
+    "sha256": "c93da8527e96ae86f5c1bd0d073dadb7fc33bfc4245a511e83a1450dcecab53b"
+  },
+  {
+    "path": "OpenRGB-1.1/Controllers/ValkyrieKeyboardController/RGBController_ValkyrieKeyboard.cpp",
+    "sha256": "c514bd7083a5060e2e6459f6982a190687bf69808965061045d6f54c5cc9ce12"
+  },
+  {
+    "path": "OpenRGB-1.1/Controllers/ValkyrieKeyboardController/RGBController_ValkyrieKeyboard.h",
+    "sha256": "5c2f75e8779134d5ece329b1cf0e5841f1aab95f632fe04bd60c399b847b549e"
+  },
+  {
+    "path": "OpenRGB-1.1/Controllers/ValkyrieKeyboardController/ValkyrieKeyboardControllerDetect.cpp",
+    "sha256": "21387309dfec3e0ef1e88f81a79b91d08e390bb01e286d1221a79fa0a8a85654"
+  },
+  {
+    "path": "OpenRGB-1.1/RGBController/RGBControllerInterface.h",
+    "sha256": "20543c30348ab9819d5f236e9635d06b21204a77ad297068878b6d63d60e1e04"
+  },
+  {
+    "path": "OpenRGB-1.1/RGBController/RGBControllerKeyNames.cpp",
+    "sha256": "1a90b270b109a194f3d2276f2666310324c0fd130d76201c8a6175d4001f29d2"
+  },
+  {
+    "path": "src/transport/valkyrie.rs",
+    "sha256": "2d7cd175977039a2d51a933888a042a787e20b7bd70ea3eeeed5c419e63c0c19"
+  },
+  {
+    "path": "src/transport/fixtures/valkyrie-oracle.cpp",
+    "sha256": "67e9fbb8e1cebb74ff37824305a5fa71ba11ea4b11e03b53e7de4c347a17db0c"
+  },
+  {
+    "path": "src/transport/fixtures/valkyrie-native.bin",
+    "sha256": "9c5e17c6adab6cd74c57d6d9a15ca7084aa0aa939d25bf22bdd442eff54fcc8f"
+  }
+]

@@ -1,0 +1,3 @@
+#include "../../../../rgb-openrgb-2026-11-05/door-ble-plugin/Protocol.h"
+#include <fstream>
+int main(){std::ofstream out("protocol-fixtures.bin",std::ios::binary);for(int i=0;i<8192;++i){unsigned char args[]={static_cast<unsigned char>((i*71)%256),static_cast<unsigned char>((i*113)%256),static_cast<unsigned char>((i*197)%256),static_cast<unsigned char>(1+i%100),static_cast<unsigned char>(1+i%60),static_cast<unsigned char>(i%256)};auto p=door::colorPacket(args[0],args[1],args[2],args[3],args[4],args[5]);out.write((char*)args,6);unsigned char n=static_cast<unsigned char>(p.size());out.write((char*)&n,1);out.write((char*)p.data(),p.size());}return out.good()?0:1;}

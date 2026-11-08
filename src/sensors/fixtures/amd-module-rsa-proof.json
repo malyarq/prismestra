@@ -1,0 +1,18 @@
+{
+  "verified": true,
+  "scheme": "RSASSA-PKCS1-v1_5 SHA256",
+  "exponent": 65537,
+  "modulus_bits": 4096,
+  "key_blob_sha256": "724af6ac42e7a4cbbbe3e4a5a0117af0fd98364a72c2aee40972228838400e59",
+  "key_source_file": "vm.cpp",
+  "key_source_sha256": "bb56cb7da7da602da1413cbac27a00a2063cb7707c70d15d0f65a74ff1ae4bb1",
+  "signature_bytes": 512,
+  "payload_offset": 516,
+  "negative_tests": {
+    "payload_first_bit": true,
+    "payload_last_bit": true,
+    "signature_first_bit": true,
+    "signature_truncated": true,
+    "payload_truncated": true
+  }
+}

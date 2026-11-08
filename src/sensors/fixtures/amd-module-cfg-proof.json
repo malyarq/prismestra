@@ -1,0 +1,34 @@
+{
+  "main": {
+    "entry": 8608,
+    "instructions": 298,
+    "callees": [
+      16,
+      480,
+      736,
+      992,
+      1568,
+      2440,
+      2528
+    ],
+    "natives": [
+      "cpuid",
+      "debug_print",
+      "get_arch"
+    ],
+    "unresolved_branches": false
+  },
+  "ioctl_read_smn": {
+    "entry": 6872,
+    "instructions": 134,
+    "callees": [],
+    "natives": [
+      "pci_config_read_dword",
+      "pci_config_write_dword"
+    ],
+    "unresolved_branches": false
+  },
+  "fixed_pin_operand_assertions": 52,
+  "AuthenticAMD_fnv1a64": "0xc0e946f161868306",
+  "scope": "all static CFG branches followed for both entries including direct callees; no execution/emulation; native implementation/driver callbacks outside module are not covered"
+}

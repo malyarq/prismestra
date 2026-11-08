@@ -1,0 +1,17 @@
+{
+  "lhm_commit": "2808d80564b6761e1b01f42fabfd966ed695fcbc",
+  "source_url": "https://raw.githubusercontent.com/LibreHardwareMonitor/LibreHardwareMonitor/2808d80564b6761e1b01f42fabfd966ed695fcbc/LibreHardwareMonitorLib/Hardware/Cpu/Amd17Cpu.cs",
+  "source_sha256": "8a6dba06cd584c91043f13bc4555fb43ec095534c80ceb00afa31e62d2b082e3",
+  "source_lines": "287-289,303-305,925-926",
+  "extracted_arithmetic_sha256": "68e2e827410dd57e3cc9ad304ab222c636530a82682a990b48dedbe509f4fbe1",
+  "oracle_sha256": "09c5a2895ca01d2ef9d8b87b472f853c7c7f0027b98c28a54a9cb7c853131ec8",
+  "compiler": "MSVC C++17 /fp:strict; no vendor code, DLL or module executed",
+  "fixture_sha256": "2d04cec24495a97de554333528531749064d29e48b81ae2f343286b6451484a0",
+  "fixture_bytes": 65536,
+  "order": "code 0..2047 outer; flags 0..7 inner; raw=(code<<21)|((flags&1)<<19)|(((flags>>1)&3)<<16); little-endian f32 bits",
+  "scope": "Tctl expression only; excludes legacy Tdie model offsets, CCDs and native acceptance",
+  "module_bytes": 10652,
+  "module_sha256": "dae74615761b78bdf064dfb3e136252ddcc6fc727d88f14738d0e5800d427a91",
+  "publisher_signature_cryptographically_verified": true,
+  "signature_proof": "amd-module-rsa-proof.json; separate offline proof against pinned key, not installed-driver trust policy"
+}
