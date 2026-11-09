@@ -1,0 +1,49 @@
+{
+  "commit": "76e91606b9927efe2f839ff7973c65471f7eee47",
+  "duration_seconds": 327.55595720000565,
+  "all_seven_devices_enabled": true,
+  "sensor_readers_started_in_real_UI": 5,
+  "observed_before_close": {
+    "pc1": 934,
+    "BLE": 563,
+    "ambient": 3140,
+    "LCD": 708
+  },
+  "observed_after_reopen": {
+    "pc1": 5424,
+    "pc2": 5767,
+    "pc3": 6399,
+    "pc4": 3677,
+    "LCD": 2760,
+    "BLE": 2727,
+    "ambient": 13320
+  },
+  "exit": "Actual tray Exit while all7 active, natural process code0",
+  "forced_cleanup": null,
+  "restoration": {
+    "errors": [],
+    "cached_rgb_exact": true,
+    "lcd_blanked": true,
+    "lcd_running": false,
+    "BLE_OFF_submitted": true
+  },
+  "limitations": [
+    "UI submissions are not optical FPS or physical pixel acceptance",
+    "Counter observations are sequential and not simultaneous rate measurements",
+    "No clean Windows guest available; sandbox executable and queried VM launchers not found",
+    "120s sampling does not establish hours-long stability or absence of leaks",
+    "BLE included here; do not compare directly to common-set BLE-OFF samples"
+  ],
+  "tested_on": "2026-11-09 Europe/Moscow",
+  "executable_sha256": "152a86e4c291ef830204be7b70bfb89a30203b64fcfa61d4647e1542592f694a",
+  "method": "Actual packaged executable, native editor and tray operated through Computer Use; counters read sequentially from the UI.",
+  "resources": {
+    "seconds": 120.8643756,
+    "cpu_percent_machine": 4.4939963475887925,
+    "private_MiB": 264.30908613445376,
+    "working_set_MiB": 163.14374343487395,
+    "scope": "App plus existing OpenRGB backend, editor closed, full kit including BLE, uncontrolled desktop; not the BLE-OFF common-set comparison."
+  },
+  "preserved_original_inputs_hashes_equal": true,
+  "visible_device_acceptance": false
+}

@@ -12,6 +12,8 @@ The table separates implementations, software tests and hardware observations. L
 | Selected native RGB | Skydimo, Fusion2, ENE and Valkyrie protocol implementations | [Transports and fixtures](../src/transport), [native adapters](../src/runtime/native.rs) | Per-device acceptance pending; these names do not imply vendor-wide support |
 | Windows Dynamic Lighting / LampArray | Planned | No direct adapter in this source preview | Unsupported here |
 
+The packaged Windows preview at `76e91606b992` also completed a 327-second full-kit run: editor close/reopen, all seven output counters, and natural tray Exit with restoration. The [revision-specific application record](validation/windows-preview1.json) includes its resource sample and limits. Physical colors and LCD pixels remain unobserved.
+
 ## What counts as support
 
 Record the exact model, hardware revision, firmware, OS, connection mode and backend. For each operation, distinguish:
