@@ -272,8 +272,6 @@ pub(super) fn close_editor(state: &State) -> Result<(), String> {
         app.ambient_image = vec![];
         app.lcd_frame = (0, 0);
         app.ambient_frame = (0, 0);
-        app.status =
-            "Редактор закрыт; подсветка, расписание и чтение датчиков продолжаются.".into();
     }
     state.app.replace(Some(app));
     if destroyed == 0 {
@@ -819,6 +817,8 @@ pub(super) fn exercise(state: &State) -> Result<(), String> {
         )
     };
     for (msg, w) in [(WM_SYSCOMMAND, SC_CLOSE as usize), (WM_CLOSE, 0)] {
+        let retained_status = "Resident diagnostic: preserve the last session status";
+        state.app.borrow_mut().as_mut().unwrap().status = retained_status.into();
         unsafe { SendMessageW(state.editor_window.get(), msg, w, 0) };
         if !state.editor_window.get().is_null() {
             return Err(format!("System close {msg:#x}/{w:#x} retained editor HWND"));
@@ -830,6 +830,9 @@ pub(super) fn exercise(state: &State) -> Result<(), String> {
         {
             let slot = state.app.borrow();
             let a = slot.as_ref().unwrap();
+            if a.status != retained_status {
+                return Err("Closing the editor replaced the last session status".into());
+            }
             if !a.widgets.is_empty()
                 || a.buffer.is_some()
                 || !a.lcd_image.is_empty()
@@ -852,6 +855,9 @@ pub(super) fn exercise(state: &State) -> Result<(), String> {
         open_editor(state)?;
         let slot = state.app.borrow();
         let a = slot.as_ref().unwrap();
+        if a.status != retained_status {
+            return Err("Reopening the editor replaced the last session status".into());
+        }
         if a.runtime.output_revision() != revision
             || !Arc::ptr_eq(&a.sources.registry, &registry)
             || a.runtime.owner_ticks().unwrap() <= ticks
