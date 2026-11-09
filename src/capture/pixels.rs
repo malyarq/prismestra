@@ -10,6 +10,9 @@ use crate::lighting::{
 };
 
 const MAX_BYTES: usize = 256 * 1024 * 1024;
+#[cfg(target_arch = "x86_64")]
+#[path = "pixels_sse41.rs"]
+mod sse41;
 
 /// Consume a borrowed BGRA8 mapping without copying the full desktop or retaining its memory.
 pub fn thumbnail(
@@ -52,6 +55,11 @@ pub fn thumbnail(
     } else {
         (320, (320 * c.height / c.width).max(1))
     };
+    #[cfg(target_arch = "x86_64")]
+    if dw < c.width && dh < c.height && std::is_x86_feature_detected!("sse4.1") {
+        // Layout/crop were bounded above; only this down/down specialization is SIMD.
+        return unsafe { sse41::thumbnail(bytes, pitch, c, dw, dh) };
+    }
     let read = |x: usize, y: usize| {
         let p = (y + c.y) * pitch + (x + c.x) * 4;
         [bytes[p + 2] as u64, bytes[p + 1] as u64, bytes[p] as u64]
@@ -218,6 +226,125 @@ pub fn fast_scale(image: &Image, width: usize, height: usize) -> Result<Image, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scalar_thumbnail(
+        bytes: &[u8],
+        width: u32,
+        height: u32,
+        pitch: usize,
+        crop: Option<Rect>,
+    ) -> Image {
+        let c = crop.unwrap_or(Rect {
+            x: 0,
+            y: 0,
+            width: width as usize,
+            height: height as usize,
+        });
+        let (dw, dh) = if 180 * c.width / c.height <= 320 {
+            ((180 * c.width / c.height).max(1), 180)
+        } else {
+            (320, (320 * c.height / c.width).max(1))
+        };
+        smooth(c.width, c.height, dw, dh, |x, y| {
+            let p = (y + c.y) * pitch + (x + c.x) * 4;
+            [
+                u64::from(bytes[p + 2]),
+                u64::from(bytes[p + 1]),
+                u64::from(bytes[p]),
+            ]
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn seeded_bgra_downscale_matches_scalar_with_crops_pitch_and_alpha() {
+        let mut seed = 0x2e6d_9a31_a59c_487bu64;
+        let mut cases = vec![
+            (321, 181, 0, None),
+            (640, 360, 7, None),
+            (641, 361, 13, None),
+            (1921, 1081, 19, None),
+            (3840, 2160, 64, None),
+            (4096, 2304, 17, None),
+            (16384, 7, 3, None),
+            (7, 16384, 9, None),
+            (
+                3840,
+                2160,
+                31,
+                Some(Rect {
+                    x: 13,
+                    y: 17,
+                    width: 3799,
+                    height: 2097,
+                }),
+            ),
+            (
+                2000,
+                1200,
+                1,
+                Some(Rect {
+                    x: 1543,
+                    y: 901,
+                    width: 457,
+                    height: 299,
+                }),
+            ),
+        ];
+        for _ in 0..24 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let w = 321 + (seed as u32 % 900);
+            let h = 181 + ((seed >> 32) as u32 % 700);
+            cases.push((
+                w,
+                h,
+                (seed as usize >> 16) % 35,
+                Some(Rect {
+                    x: 1,
+                    y: 1,
+                    width: w as usize - 2,
+                    height: h as usize - 2,
+                }),
+            ));
+        }
+        for (w, h, padding, crop) in cases {
+            let pitch = w as usize * 4 + padding;
+            // Last row deliberately has no trailing padding: wide loads must not overread.
+            let mut bytes = vec![0u8; (h as usize - 1) * pitch + w as usize * 4];
+            for value in &mut bytes {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                *value = (seed >> 32) as u8;
+            }
+            let scalar = scalar_thumbnail(&bytes, w, h, pitch, crop);
+            let actual = thumbnail(&bytes, w, h, pitch, crop).unwrap();
+            assert_eq!(actual, scalar, "{w}x{h} pitch{pitch} crop{crop:?}");
+            for y in 0..h as usize {
+                for x in 0..w as usize {
+                    bytes[y * pitch + x * 4 + 3] ^= 255;
+                }
+            }
+            assert_eq!(
+                thumbnail(&bytes, w, h, pitch, crop).unwrap(),
+                scalar,
+                "alpha affected {w}x{h}"
+            );
+            assert!(thumbnail(&bytes[..bytes.len() - 1], w, h, pitch, crop).is_err());
+        }
+    }
+
+    #[test]
+    fn mixed_equal_and_up_thumbnail_remain_scalar_exact() {
+        for (w, h) in [(1, 1), (500, 1), (1, 500), (320, 180), (31, 17)] {
+            let pitch = w as usize * 4 + 3;
+            let bytes: Vec<_> = (0..(h as usize - 1) * pitch + w as usize * 4)
+                .map(|i| (i.wrapping_mul(37) % 251) as u8)
+                .collect();
+            assert_eq!(
+                thumbnail(&bytes, w, h, pitch, None).unwrap(),
+                scalar_thumbnail(&bytes, w, h, pitch, None)
+            );
+        }
+    }
 
     #[test]
     fn padded_last_row_and_alpha_are_independent_of_owned_output() {
