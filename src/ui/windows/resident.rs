@@ -479,7 +479,15 @@ fn finish_stop(app: &mut App) -> Result<(), String> {
     app.status="Работа остановлена. Устройства освобождены; для запуска выберите подключения и нажмите «Применить».".into();
     app.set_check(PC_ON, false);
     app.set_check(DOOR_ON, false);
+    // Undo the shutdown-wide disable, then reapply each control's normal policy.
+    for hwnd in app.widgets.values() {
+        unsafe { EnableWindow(*hwnd, 1) };
+    }
     app.refresh_connections();
+    if !app.widgets.is_empty() {
+        app.editor_buttons();
+        app.refresh_source_status();
+    }
     app.show_page();
     Ok(())
 }
@@ -490,11 +498,13 @@ fn maintain(state: &State) -> Result<(), String> {
     if state.editor_window.get().is_null() || state.session_action.get() != Action::None {
         app.tick()?;
     }
+    let mut stopped = false;
     if state.session_action.get() != Action::None && app.close_ready() {
         match state.session_action.get() {
             Action::Stop => {
                 finish_stop(app)?;
                 state.session_action.set(Action::None);
+                stopped = true;
             }
             Action::Exit => {
                 drop(slot);
@@ -513,7 +523,7 @@ fn maintain(state: &State) -> Result<(), String> {
         }
     }
     let editor = state.editor_window.get();
-    if !editor.is_null() && state.session_action.get() != Action::None {
+    if !editor.is_null() && (stopped || state.session_action.get() != Action::None) {
         unsafe {
             InvalidateRect(editor, null(), 0);
         }
@@ -959,11 +969,66 @@ pub(super) fn exercise(state: &State) -> Result<(), String> {
             .map_err(|e| format!("Resident configuration 2: {e}"))?;
         a.was_pending = true;
     }
-    close_editor(state)?;
+    let stopped_editor = state.editor_window.get();
     request(state, Action::Stop, false)?;
+    {
+        let slot = state.app.borrow();
+        let a = slot.as_ref().unwrap();
+        if unsafe { IsWindowEnabled(a.h(NAV_SCENE)) } != 0 {
+            return Err("Stop did not disable the open editor during drain".into());
+        }
+    }
+    unsafe { UpdateWindow(stopped_editor) };
     settle(state, "stop", |a| {
         state.session_action.get() == Action::None && !a.shutdown.active()
     })?;
+    {
+        let slot = state.app.borrow();
+        let a = slot.as_ref().unwrap();
+        if state.editor_window.get() != stopped_editor {
+            return Err("Stop replaced the open editor".into());
+        }
+        for id in [
+            NAV_SCENE,
+            NAV_DEVICES,
+            NAV_SOURCES,
+            NAV_CONNECTIONS,
+            PC_ON,
+            DOOR_ON,
+        ] {
+            if unsafe { IsWindowEnabled(a.h(id)) } == 0 {
+                return Err(format!("Stop left editor control {id} disabled"));
+            }
+        }
+        if unsafe { IsWindowEnabled(a.h(E_APPLY)) } != 0 {
+            return Err("Stop enabled Apply without unapplied changes".into());
+        }
+        if !a.status.starts_with("Работа остановлена.") {
+            return Err("Stop retained the closing status".into());
+        }
+    }
+    if unsafe { GetUpdateRect(stopped_editor, null_mut(), 0) } == 0 {
+        return Err("Stop did not invalidate the open editor".into());
+    }
+    let capture = {
+        let slot = state.app.borrow();
+        let a = slot.as_ref().unwrap();
+        (
+            a.width,
+            a.height,
+            a.state_dir.join("resident-stop-open.png"),
+        )
+    };
+    let bitmap = Bitmap::new(capture.0, capture.1)?;
+    unsafe {
+        SendMessageW(
+            stopped_editor,
+            WM_PRINT,
+            bitmap.dc as usize,
+            (PRF_CLIENT | PRF_CHILDREN | PRF_ERASEBKGND) as isize,
+        );
+    }
+    bitmap.save(&capture.2)?;
     let idle_until = Instant::now() + std::time::Duration::from_millis(100);
     while Instant::now() < idle_until {
         maintain(state)?;

@@ -18,7 +18,7 @@
 
 Prismestra is a local lighting orchestrator for Windows. Its goal is to bring PC RGB, unusual Bluetooth lights, LCD displays and home lighting into one spatial scene, with explicit device support and a small resident engine.
 
-**Source preview.** The scene engine, native editor and OpenRGB/WLED/Home Assistant setup paths are implemented and have software tests. Home Assistant tokens use Windows Credential Manager. A resident session keeps lighting and sensor subscriptions alive when the editor closes. The [local integration record](docs/validation/windows-local-kit.json) covers transport checks on one PC kit; visible-device acceptance, interactive tray checks and paired resource measurements remain pending. See the [compatibility table](docs/compatibility.md) before choosing a device.
+**Source preview.** The scene engine, native editor and OpenRGB/WLED/Home Assistant setup paths are implemented and have software tests. Home Assistant tokens use Windows Credential Manager. A resident session keeps lighting and sensor subscriptions alive when the editor closes. The [local integration record](docs/validation/windows-local-kit.json) covers transport checks on one PC kit and identifies the tested source revision. Physical colors, firmware behavior and performance require separate checks. See the [compatibility table](docs/compatibility.md) before choosing a device.
 
 ## What it does
 
@@ -66,7 +66,7 @@ cargo test --locked -- --test-threads=1
 cargo clippy --locked --all-targets -- -D warnings
 ```
 
-The [Windows workflow](.github/workflows/windows.yml) checks software behavior without real device activation. Tests use fixtures, temporary files and loopback servers. Physical acceptance and resource measurements are separate work; no performance numbers are claimed yet.
+The [Windows workflow](.github/workflows/windows.yml) checks software behavior without real device activation. Tests use fixtures, temporary files and loopback servers. Device and resource results are revision-specific; passing software CI does not certify physical output or establish a performance advantage.
 
 To report a device or help add one, start with [contributing](CONTRIBUTING.md). A precise model, revision, firmware and connection mode are more useful than a vendor-wide support request.
 
