@@ -1,10 +1,10 @@
 //! Optional cached-temperature interoperability, not an own hardware sensor provider.
-//! No caller in the application invokes this adapter yet. Tests contact only owned fake pipes.
+//! Explicitly started sensor readers use this adapter. Tests contact only owned fake pipes.
 use super::{fancontrol_wire as wire, temperatures::Reading};
 use std::{
     path::{Component, Path, PathBuf, Prefix},
     ptr::{null, null_mut},
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use windows_sys::Win32::{
     Foundation::*,
@@ -241,13 +241,20 @@ pub fn read_temperatures(policy: &Policy) -> Result<Vec<Reading>, String> {
         if raw != INVALID_HANDLE_VALUE {
             break handle(raw)?;
         }
-        if unsafe { GetLastError() } != ERROR_PIPE_BUSY {
+        let status = unsafe { GetLastError() };
+        if status == ERROR_FILE_NOT_FOUND {
+            // WaitNamedPipe returns immediately when no server instance exists.
+            std::thread::sleep(Duration::from_millis(u64::from(left.min(25))));
+            continue;
+        }
+        if status != ERROR_PIPE_BUSY {
             return Err(error("Open local FanControl pipe"));
         }
-        if unsafe { WaitNamedPipeW(policy.name.as_ptr(), left.min(100)) } == 0
-            && unsafe { GetLastError() } != ERROR_SEM_TIMEOUT
-        {
-            return Err(error("Wait for FanControl pipe"));
+        if unsafe { WaitNamedPipeW(policy.name.as_ptr(), left.min(100)) } == 0 {
+            match unsafe { GetLastError() } {
+                ERROR_SEM_TIMEOUT | ERROR_FILE_NOT_FOUND => {}
+                _ => return Err(error("Wait for FanControl pipe")),
+            }
         }
     };
     let mut connection = Connection {
@@ -279,7 +286,6 @@ mod tests {
         atomic::{AtomicU64, Ordering},
         mpsc,
     };
-    use std::time::Duration;
     use windows_sys::Win32::Storage::FileSystem::{FlushFileBuffers, PIPE_ACCESS_DUPLEX};
     static NEXT: AtomicU64 = AtomicU64::new(0);
     fn empty_reply(padding: usize) -> Vec<u8> {
@@ -316,6 +322,14 @@ mod tests {
         delay: Duration,
         message_mode: bool,
     ) -> (String, Arc<AtomicU64>, std::thread::JoinHandle<()>) {
+        server_after(reply, delay, message_mode, Duration::ZERO)
+    }
+    fn server_after(
+        reply: Vec<u8>,
+        delay: Duration,
+        message_mode: bool,
+        start_after: Duration,
+    ) -> (String, Arc<AtomicU64>, std::thread::JoinHandle<()>) {
         let name = format!(
             r"\\.\pipe\pc-control-stand-{}-{}",
             std::process::id(),
@@ -326,6 +340,7 @@ mod tests {
         let (ready_tx, ready_rx) = mpsc::channel();
         let n = name.clone();
         let thread = std::thread::spawn(move || {
+            std::thread::sleep(start_after);
             let name = wide(std::ffi::OsStr::new(&n)).unwrap();
             let pipe = handle(unsafe {
                 CreateNamedPipeW(
@@ -354,7 +369,7 @@ mod tests {
             } else {
                 unsafe { GetLastError() }
             };
-            ready_tx.send(()).unwrap();
+            let _ = ready_tx.send(());
             if status == ERROR_IO_PENDING {
                 if unsafe { WaitForSingleObject(event.0, 3000) } != WAIT_OBJECT_0 {
                     let mut bytes = 0;
@@ -392,8 +407,53 @@ mod tests {
                 }
             }
         });
-        ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        if start_after.is_zero() {
+            ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
         (name, count, thread)
+    }
+    #[test]
+    fn missing_pipe_can_appear_within_the_existing_connection_budget() {
+        let delay = Duration::from_millis(80);
+        let (name, count, thread) = server_after(empty_reply(0), Duration::ZERO, true, delay);
+        let policy = Policy::new(&name, std::env::current_exe().unwrap(), 2500).unwrap();
+        let started = Instant::now();
+        let result = read_temperatures(&policy);
+        let elapsed = started.elapsed();
+        thread.join().unwrap();
+        assert_eq!(result.unwrap(), Vec::new());
+        assert!(elapsed >= delay);
+        assert_eq!(count.load(Ordering::Relaxed), 1);
+    }
+    #[test]
+    fn missing_pipe_exhausts_the_same_connection_budget() {
+        let name = format!(
+            r"\\.\pipe\pc-control-absent-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        );
+        let policy = Policy::new(&name, std::env::current_exe().unwrap(), 80).unwrap();
+        let started = Instant::now();
+        assert!(
+            read_temperatures(&policy)
+                .unwrap_err()
+                .contains("connection timeout")
+        );
+        assert!(started.elapsed() >= Duration::from_millis(80));
+    }
+    #[test]
+    fn missing_pipe_wait_does_not_reset_the_rpc_budget() {
+        let (name, count, thread) = server_after(
+            empty_reply(0),
+            Duration::from_millis(180),
+            true,
+            Duration::from_millis(80),
+        );
+        let policy = Policy::new(&name, std::env::current_exe().unwrap(), 200).unwrap();
+        let result = read_temperatures(&policy);
+        thread.join().unwrap();
+        assert!(result.unwrap_err().contains("timeout"));
+        assert_eq!(count.load(Ordering::Relaxed), 1);
     }
     #[test]
     fn own_server_executable_verified_and_message_chunks_reassembled() {
