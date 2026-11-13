@@ -37,6 +37,12 @@ class PackageChecks(unittest.TestCase):
         ]})
         self.assertEqual(entries[0]["distribution_license"], "MIT AND IJG")
 
+    def test_flume_legacy_dual_license_spelling_selects_mit(self):
+        entries = release.inventory({"packages": [
+            dict(name="flume", version="0.12.0", license="Apache-2.0/MIT")
+        ]})
+        self.assertEqual(entries[0]["distribution_license"], "MIT")
+
     def test_dirty_or_changed_checkout_is_rejected(self):
         expected = "a" * 40
         for outputs in (["b" * 40], [expected, "?? private.json"]):

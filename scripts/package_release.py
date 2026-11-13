@@ -17,6 +17,8 @@ LICENSE_CHOICES = {
     "BSD-3-Clause": "BSD-3-Clause", "GPL-2.0": "GPL-2.0-only",
     "GPL-2.0-or-later": "GPL-2.0-only",
     "MIT OR Apache-2.0": "MIT", "Apache-2.0 OR MIT": "MIT",
+    # flume 0.12 ships LICENSE-MIT and explicitly offers either license in README.
+    "Apache-2.0/MIT": "MIT",
     "0BSD OR MIT OR Apache-2.0": "0BSD", "Unlicense OR MIT": "MIT",
     "Zlib OR Apache-2.0 OR MIT": "Zlib", "BSD-3-Clause OR Apache-2.0": "BSD-3-Clause",
     "MIT OR Apache-2.0 OR Zlib": "MIT", "MIT OR Zlib OR Apache-2.0": "MIT",
