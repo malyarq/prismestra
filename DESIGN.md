@@ -1,4 +1,14 @@
-# Native application direction
+# Desktop interface integration
+
+The desktop editor uses the approved dark-study visual system: local Source Sans3, D1 mark, graphite surfaces, 36px commands,32px icon actions,32px panels and40px dialogs. Its single stylesheet lives at [ui.css](src/ui/windows/web/ui.css). Basic palette, speed and brightness stay visible; effect-specific advanced parameters are disclosed under an additional-settings section.
+
+UI assets are embedded. The frontend is a view and command client, not another project model or hardware owner. Forms for existing advanced settings reflect validated native controls; credentials are never echoed in snapshots. RGB drafts and the scene catalog are persisted by Rust. [Behavior and limits](docs/desktop-editor.md).
+
+---
+
+# Classic editor reference
+
+The following describes the retained `--classic-editor` surface and its existing diagnostic snapshots. It is not the visual contract for the default desktop editor above.
 
 This is an Operate surface: the user edits behavior and understands state. Product truth is in PRODUCT.md and PARITY.md. Direction is chosen under the user's explicit delegation; the old OpenRGB UI is behavioral reference, not a visual lock.
 
