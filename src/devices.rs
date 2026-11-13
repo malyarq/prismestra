@@ -140,8 +140,11 @@ impl Device {
                     return Err("Skydimo role or LED count mismatch".into());
                 }
             }
-            Driver::DoorBle if self.role != Role::Canvas || self.leds != door::COLOR_GROUPS => {
-                return Err("Door BLE requires 20 canvas groups".into());
+            Driver::DoorBle
+                if self.role != Role::Canvas
+                    || ![door::COLOR_GROUPS, door::PIXEL_LEDS].contains(&self.leds) =>
+            {
+                return Err("Door BLE requires 20 legacy groups or 153 E1 preview pixels".into());
             }
             Driver::TtLcd if self.role != Role::Lcd || self.leds != 0 => {
                 return Err("TT LCD requires LCD role and zero RGB LEDs".into());

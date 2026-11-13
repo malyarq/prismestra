@@ -107,6 +107,56 @@ pub trait Link {
     fn connected(&self) -> Result<bool, String>;
     fn max_pdu(&self) -> Result<u32, String>;
     fn write(&mut self, packet: &[u8], control: &mut dyn Control) -> Result<(), String>;
+    fn write_pixels(
+        &mut self,
+        _colors: &[Rgb],
+        _brightness: i32,
+        _sequence: u8,
+        _control: &mut dyn Control,
+    ) -> Result<(), String> {
+        Err("BLE link does not support pixel frames".into())
+    }
+}
+/// Propagate the whole-frame budget into each asynchronous GATT wait.
+struct FrameControl<'a> {
+    inner: &'a mut dyn Control,
+    started: Duration,
+}
+impl Control for FrameControl<'_> {
+    fn now(&self) -> Duration {
+        self.inner.now()
+    }
+    fn cancelled(&self) -> bool {
+        self.inner.cancelled() || self.now().saturating_sub(self.started) >= TIMEOUT
+    }
+    fn sleep(&mut self, duration: Duration) {
+        self.inner.sleep(duration);
+    }
+    fn idle(&mut self, wait: &mut dyn FnMut(Duration)) {
+        self.inner.idle(wait);
+    }
+}
+/// Validate the whole strict pixel frame before the first write; never retry a partial frame.
+pub(crate) fn write_pixel_frame(
+    colors: &[Rgb],
+    brightness: i32,
+    sequence: u8,
+    pdu: u32,
+    control: &mut dyn Control,
+    submit: &mut impl FnMut(&[u8], &mut dyn Control) -> Result<(), String>,
+) -> Result<(), String> {
+    let started = control.now();
+    let packets =
+        door::pixel_fragments(colors, brightness, sequence, pdu).map_err(str::to_owned)?;
+    let mut frame = FrameControl {
+        inner: control,
+        started,
+    };
+    for packet in packets {
+        check_wait(&frame, started)?;
+        submit(&packet, &mut frame)?;
+    }
+    check_wait(&frame, started)
 }
 #[derive(Default)]
 struct State {
@@ -594,6 +644,93 @@ mod tests {
         })
         .unwrap();
         assert_eq!(*writes.lock().unwrap(), vec![door::off_packet(9)]);
+    }
+    #[test]
+    fn pixel_frame_validation_cancellation_and_partial_failure_stop_writes() {
+        let colors = [Rgb::new(255, 0, 0); door::PIXEL_LEDS];
+        for (input, brightness, pdu) in [
+            (&colors[..152], 15, 200),
+            (&colors[..], 0, 200),
+            (&colors[..], 15, 12),
+        ] {
+            let mut clock = Clock {
+                time: Duration::ZERO,
+                cancel_at: Duration::MAX,
+            };
+            let mut count = 0;
+            assert!(
+                write_pixel_frame(input, brightness, 1, pdu, &mut clock, &mut |_, _| {
+                    count += 1;
+                    Ok(())
+                })
+                .is_err()
+            );
+            assert_eq!(count, 0);
+        }
+        for fail in [false, true] {
+            let mut clock = Clock {
+                time: Duration::ZERO,
+                cancel_at: if fail { Duration::MAX } else { POLL },
+            };
+            let mut writes = Vec::new();
+            assert!(
+                write_pixel_frame(&colors, 15, 7, 200, &mut clock, &mut |packet, control| {
+                    writes.push(packet.to_vec());
+                    if fail {
+                        return Err("fragment rejected".into());
+                    }
+                    control.sleep(POLL);
+                    Ok(())
+                })
+                .is_err()
+            );
+            assert_eq!(writes.len(), 1);
+            assert_eq!(writes[0][1], 7);
+            assert_eq!(writes[0].len(), 196);
+        }
+    }
+    #[test]
+    fn pixel_frame_deadline_reaches_inflight_wait_and_checks_last_fragment() {
+        let colors = [Rgb::new(0, 255, 0); door::PIXEL_LEDS];
+        let mut clock = Clock {
+            time: Duration::ZERO,
+            cancel_at: Duration::MAX,
+        };
+        let mut writes = 0;
+        let mut cancelled_inside_write = false;
+        let result = write_pixel_frame(&colors, 100, 0, 200, &mut clock, &mut |_, control| {
+            writes += 1;
+            for _ in 0..160 {
+                control.sleep(POLL);
+                if control.cancelled() {
+                    cancelled_inside_write = true;
+                    return Err("frame deadline reached inside GATT wait".into());
+                }
+            }
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert!(cancelled_inside_write);
+        assert_eq!(writes, 2);
+        assert_eq!(clock.time, TIMEOUT);
+
+        let mut clock = Clock {
+            time: Duration::ZERO,
+            cancel_at: Duration::MAX,
+        };
+        let mut writes = 0;
+        assert!(
+            write_pixel_frame(&colors, 100, 0, 200, &mut clock, &mut |_, control| {
+                writes += 1;
+                for _ in 0..64 {
+                    control.sleep(POLL);
+                }
+                Ok(())
+            })
+            .is_err()
+        );
+        assert_eq!(writes, 5);
+        assert_eq!(clock.time, TIMEOUT);
     }
     #[test]
     fn discovery_and_budget_guards() {

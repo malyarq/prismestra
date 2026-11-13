@@ -485,6 +485,7 @@ mod tests {
         for (id, count) in [
             ("home-assistant-light", 1),
             ("door20", 20),
+            ("door153", 153),
             ("tt-lcd", 0),
             ("ene8", 8),
             ("vk99", 102),

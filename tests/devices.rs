@@ -70,6 +70,31 @@ fn setup() -> Setup {
         },
     }
 }
+
+#[test]
+fn door_pixel_preset_is_explicit_and_preserves_legacy_profiles() {
+    let pixels = pc_control::app::device_setup::preset("door153")
+        .unwrap()
+        .device("strip")
+        .unwrap();
+    assert_eq!(pixels.leds, 153);
+    assert_eq!(pixels.rate_hz, 10);
+    assert!(!pixels.enabled);
+    assert_eq!(pixels.driver, Driver::DoorBle);
+    pixels.validate().unwrap();
+    let legacy = pc_control::app::device_setup::preset("door20")
+        .unwrap()
+        .device("strip")
+        .unwrap();
+    assert_eq!(legacy.leds, 20);
+    legacy.validate().unwrap();
+    let mut invalid = pixels;
+    invalid.leds = 152;
+    assert!(invalid.validate().is_err());
+    invalid.leds = 153;
+    invalid.role = Role::Ambient;
+    assert!(invalid.validate().is_err());
+}
 fn bindings() -> Bindings {
     BTreeMap::from([
         (

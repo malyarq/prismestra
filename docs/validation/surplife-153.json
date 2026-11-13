@@ -1,0 +1,11 @@
+{
+  "date": "2026-11-13",
+  "scope": "One selected Surplife E1 BLE controller; color-only research probe before native integration",
+  "controller_status": { "product": 170, "led_protocol_version": 11, "segments": 1, "configured_points": 153 },
+  "legacy_e103_153": "Inconclusive: observer estimated6-8 adjacent LEDs and uncertain same-position A/B; not used to establish perLED capability",
+  "e104_candidate": { "is_preview": true, "point_count": 153, "body_bytes": 774, "write_lengths": [196, 196, 196, 196, 18] },
+  "visual_observation": { "marker_index": 0, "method": "Stationary green marker held until observer response", "observer_answer": "1лед", "result": "One physical LED confirmed" },
+  "geometry_before_after": "One segment153 points retained after successful probes",
+  "configuration_commands_sent": 0,
+  "limitations": ["Not an exhaustive optical check of all153 addresses", "Other controllers and firmware not established", "Transport completion is not an optical measurement", "Native build acceptance is separate from this research probe"]
+}

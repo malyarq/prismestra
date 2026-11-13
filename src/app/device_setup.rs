@@ -66,9 +66,15 @@ static BASE_PRESETS: &[Preset] = &[
     },
     Preset {
         id: "door20",
-        label: "Door BLE · 20",
+        label: "Surplife BLE · 20 групп",
         family: Family::Door,
         leds: 20,
+    },
+    Preset {
+        id: "door153",
+        label: "Surplife BLE · 153 LED",
+        family: Family::Door,
+        leds: crate::lighting::door::PIXEL_LEDS,
     },
     Preset {
         id: "tt-lcd",
@@ -170,6 +176,10 @@ impl Preset {
             leds,
             rate_hz: if matches!(self.family, Family::HomeAssistant) {
                 1
+            } else if matches!(self.family, Family::Door)
+                && leds == crate::lighting::door::PIXEL_LEDS
+            {
+                10
             } else {
                 25
             },

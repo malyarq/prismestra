@@ -275,6 +275,27 @@ impl Link for WindowsLink {
         if !ble::valid_packet(packet) {
             return Err("Packet is not an audited door command; no bytes sent".into());
         }
+        self.submit_raw(packet, control)
+    }
+    fn write_pixels(
+        &mut self,
+        colors: &[crate::lighting::color::Rgb],
+        brightness: i32,
+        sequence: u8,
+        control: &mut dyn Control,
+    ) -> Result<(), String> {
+        ble::write_pixel_frame(
+            colors,
+            brightness,
+            sequence,
+            self.max_pdu()?,
+            control,
+            &mut |packet, control| self.submit_raw(packet, control),
+        )
+    }
+}
+impl WindowsLink {
+    fn submit_raw(&mut self, packet: &[u8], control: &mut dyn Control) -> Result<(), String> {
         if control.cancelled() {
             return Err("Operation cancelled or timed out; disconnected".into());
         }
