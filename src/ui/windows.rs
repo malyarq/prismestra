@@ -36,9 +36,14 @@ use windows_sys::Win32::{
     },
 };
 const TBM_GETPOS: u32 = WM_USER;
+mod brand_icon;
 mod connections;
+mod modern;
+mod native_forms;
 mod resident;
 mod runtime_client;
+mod web_shell;
+const MODERN_RETURN: i32 = 109;
 mod sources;
 use runtime_client::Client;
 const CLASS: &str = "PrismestraWindow";
@@ -124,12 +129,17 @@ struct Options {
     allow_sensor_discovery: bool,
     source_discovery_page: bool,
     selftest: bool,
+    classic_editor: bool,
 }
 fn options(args: Vec<OsString>) -> Result<Options, String> {
     let mut o = Options::default();
     let mut it = args.into_iter();
     while let Some(key) = it.next() {
         let key = key.to_str().ok_or("Invalid option encoding")?;
+        if key == "--classic-editor" {
+            o.classic_editor = true;
+            continue;
+        }
         if key == "--selftest" {
             o.selftest = true;
             continue;
@@ -475,6 +485,7 @@ impl Drop for Bitmap {
     }
 }
 struct App {
+    web_mode: bool,
     connections: connections::Editor,
     native_lighting: Option<crate::app::lighting_outputs::Local>,
     sources: sources::Editor,
@@ -607,6 +618,13 @@ impl App {
         Ok(())
     }
     fn build(&mut self, parent: HWND) -> Result<(), String> {
+        self.control(
+            parent,
+            MODERN_RETURN,
+            "BUTTON",
+            "Новый интерфейс",
+            BS_PUSHBUTTON as u32,
+        )?;
         for (id, text) in [
             (NAV_SCENE, "Сцена"),
             (NAV_DEVICES, "Устройства"),
@@ -909,6 +927,7 @@ impl App {
         ] {
             self.pos(id, 16, y, 132, 32);
         }
+        self.pos(MODERN_RETURN, 16, 72, 156, 32);
         self.pos(OPEN, 16, h - 132, 132, 32);
         self.pos(SAVE, 16, h - 92, 132, 32);
         self.pos(EXPORT, 16, h - 172, 132, 32);
@@ -957,6 +976,14 @@ impl App {
         self.show_page();
     }
     fn show_page(&self) {
+        if self.web_mode {
+            for hwnd in self.widgets.values() {
+                unsafe {
+                    ShowWindow(*hwnd, SW_HIDE);
+                }
+            }
+            return;
+        }
         for id in [
             NAV_SCENE,
             NAV_DEVICES,
@@ -2135,6 +2162,10 @@ fn parse_time(s: &str) -> Result<u16, String> {
     Ok(h * 60 + m)
 }
 struct State {
+    icon: brand_icon::Icon,
+    modern_enabled: bool,
+    webview: RefCell<Option<web_shell::WebShell>>,
+    modern_session: RefCell<Option<modern::Session>>,
     app: RefCell<Option<App>>,
     snapshot: bool,
     resident: Cell<bool>,
@@ -2465,6 +2496,7 @@ unsafe fn dispatch(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
         return 1;
     }
     if msg == WM_DESTROY {
+        modern::close(state);
         if let Ok(mut slot) = state.app.try_borrow_mut()
             && let Some(app) = slot.as_mut()
         {
@@ -2488,6 +2520,7 @@ unsafe fn dispatch(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
             if state.session_action.get() == resident::Action::None
                 && let Err(error) = resident::close_editor(state)
             {
+                modern::close_failed(state, &error);
                 resident::report(state, error);
             }
             return 0;
@@ -2575,6 +2608,7 @@ unsafe fn dispatch(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
         let dc = unsafe { BeginPaint(hwnd, &mut ps) };
         if let Ok(mut slot) = state.app.try_borrow_mut()
             && let Some(a) = slot.as_mut()
+            && !a.web_mode
             && let Err(e) = a.render(dc)
         {
             a.status = e;
@@ -2589,6 +2623,18 @@ unsafe fn dispatch(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
             && let Some(a) = slot.as_ref()
         {
             let _ = a.painter.paint(w as HDC, a.width, a.height, &a.view());
+        }
+        return 0;
+    }
+    if msg == WM_SIZE {
+        modern::resize(state, (l & 0xffff) as i32, ((l >> 16) & 0xffff) as i32);
+    }
+    if msg == WM_TIMER {
+        modern::maintain(state);
+    }
+    if msg == WM_COMMAND && (w & 0xffff) as i32 == MODERN_RETURN {
+        if let Err(error) = modern::return_to_editor(state) {
+            resident::report(state, error);
         }
         return 0;
     }
@@ -2727,8 +2773,15 @@ impl Drop for Window {
 }
 pub fn run(args: Vec<OsString>) -> Result<(), String> {
     let diagnostic = args.iter().any(|a| a == "--snapshot" || a == "--selftest");
+    let error_dir = args
+        .windows(2)
+        .find(|pair| pair[0] == "--state-dir")
+        .map(|pair| PathBuf::from(&pair[1]));
     let result = run_inner(args);
     if !diagnostic && let Err(error) = &result {
+        if let Some(dir) = error_dir {
+            let _ = std::fs::write(dir.join("startup-error.txt"), error);
+        }
         let message: String = error.chars().take(1000).collect();
         unsafe {
             MessageBoxW(
@@ -2824,6 +2877,10 @@ fn run_inner(args: Vec<OsString>) -> Result<(), String> {
         return Err(last("Initialize native controls"));
     }
     let state = Box::new(State {
+        icon: brand_icon::Icon::new()?,
+        modern_enabled: !o.classic_editor && resident_mode,
+        webview: RefCell::new(None),
+        modern_session: RefCell::new(None),
         app: RefCell::new(None),
         snapshot: o.snapshot.is_some(),
         resident: Cell::new(resident_mode),
@@ -2839,6 +2896,8 @@ fn run_inner(args: Vec<OsString>) -> Result<(), String> {
         cbSize: size_of::<WNDCLASSEXW>() as u32,
         lpfnWndProc: Some(proc),
         hInstance: instance,
+        hIcon: state.icon.handle(),
+        hIconSm: state.icon.handle(),
         hCursor: unsafe { LoadCursorW(null_mut(), IDC_ARROW) },
         hbrBackground: unsafe { GetStockObject(WHITE_BRUSH) } as HBRUSH,
         lpszClassName: class.as_ptr(),
@@ -2892,6 +2951,7 @@ fn run_inner(args: Vec<OsString>) -> Result<(), String> {
     state.editor_window.set(raw);
     let window = Window(state.editor_window.clone());
     let mut app = App {
+        web_mode: false,
         connections: connections::Editor::new(
             o.native_lighting
                 .clone()
@@ -3130,8 +3190,17 @@ fn run_inner(args: Vec<OsString>) -> Result<(), String> {
         drop(window);
         return Ok(());
     }
+    // WebView2 initialization pumps messages before ShowWindow. Keep the existing
+    // editor timer live so completion callbacks cannot strand the nested pump.
     if unsafe { SetTimer(raw, 1, 16, None) } == 0 {
         return Err(last("Start preview refresh"));
+    }
+    if let Err(error) = modern::open(&state)
+        && let Some(app) = state.app.borrow_mut().as_mut()
+    {
+        app.web_mode = false;
+        app.status = format!("Новый интерфейс недоступен: {error}");
+        app.show_page();
     }
     unsafe {
         ShowWindow(raw, SW_SHOWNORMAL);

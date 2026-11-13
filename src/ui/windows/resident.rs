@@ -139,6 +139,7 @@ impl Instance {
 }
 pub(super) struct Shell {
     hwnd: HWND,
+    icon: HICON,
     tray: bool,
 }
 impl Shell {
@@ -179,13 +180,17 @@ impl Shell {
         }
         state.shell_window.set(hwnd);
         state.tray_enabled.set(tray);
-        let shell = Self { hwnd, tray };
+        let shell = Self {
+            hwnd,
+            tray,
+            icon: state.icon.handle(),
+        };
         if tray {
             TASKBAR_CREATED.store(
                 unsafe { RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()) },
                 Ordering::Relaxed,
             );
-            tray_add(hwnd)?;
+            tray_add(hwnd, state.icon.handle())?;
         }
         if unsafe { SetTimer(hwnd, 1, 50, None) } == 0 {
             return Err(last("Start session maintenance"));
@@ -196,7 +201,7 @@ impl Shell {
 impl Drop for Shell {
     fn drop(&mut self) {
         if self.tray {
-            let data = tray_data(self.hwnd);
+            let data = tray_data(self.hwnd, self.icon);
             unsafe {
                 Shell_NotifyIconW(NIM_DELETE, &data);
             }
@@ -206,14 +211,14 @@ impl Drop for Shell {
         }
     }
 }
-fn tray_data(hwnd: HWND) -> NOTIFYICONDATAW {
+fn tray_data(hwnd: HWND, icon: HICON) -> NOTIFYICONDATAW {
     let mut data = NOTIFYICONDATAW {
         cbSize: size_of::<NOTIFYICONDATAW>() as u32,
         hWnd: hwnd,
         uID: 1,
         uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP,
         uCallbackMessage: CALLBACK,
-        hIcon: unsafe { LoadIconW(null_mut(), IDI_APPLICATION) },
+        hIcon: icon,
         ..Default::default()
     };
     for (out, input) in data
@@ -225,8 +230,8 @@ fn tray_data(hwnd: HWND) -> NOTIFYICONDATAW {
     }
     data
 }
-fn tray_add(hwnd: HWND) -> Result<(), String> {
-    let data = tray_data(hwnd);
+fn tray_add(hwnd: HWND, icon: HICON) -> Result<(), String> {
+    let data = tray_data(hwnd, icon);
     if unsafe { Shell_NotifyIconW(NIM_ADD, &data) } == 0 {
         Err(last("Create tray icon"))
     } else {
@@ -256,14 +261,19 @@ pub(super) fn close_editor(state: &State) -> Result<(), String> {
         let a = slot.as_ref().ok_or("Нет сессии")?;
         a.guard_connections_close()?;
         a.guard_sources_exit()?;
+        super::native_forms::guard_close(a)?;
         if a.editor_dirty {
             return Err(
                 "Примените или сбросьте правки параметров перед закрытием редактора.".into(),
             );
         }
     }
+    if !super::modern::prepare_close(state, false, false)? {
+        return Ok(());
+    }
     // Native teardown can reenter the window procedure; do not retain a RefCell borrow.
     let mut app = state.app.borrow_mut().take().ok_or("Нет сессии")?;
+    super::modern::close(state);
     let destroyed = unsafe { DestroyWindow(hwnd) };
     if destroyed != 0 {
         app.widgets.clear();
@@ -388,6 +398,13 @@ pub(super) fn open_editor(state: &State) -> Result<(), String> {
     })();
     state.app.replace(Some(app));
     let hwnd = result?;
+    if let Err(error) = super::modern::open(state)
+        && let Some(app) = state.app.borrow_mut().as_mut()
+    {
+        app.web_mode = false;
+        app.status = format!("Новый интерфейс недоступен: {error}");
+        app.show_page();
+    }
     unsafe {
         if state.snapshot {
             SetWindowPos(
@@ -406,7 +423,10 @@ pub(super) fn open_editor(state: &State) -> Result<(), String> {
     }
     Ok(())
 }
-fn request(state: &State, action: Action, confirm: bool) -> Result<(), String> {
+pub(super) fn request(state: &State, action: Action, confirm: bool) -> Result<(), String> {
+    if action == Action::Exit && !super::modern::prepare_close(state, true, confirm)? {
+        return Ok(());
+    }
     let current = state.session_action.get();
     let upgrade = current == Action::Stop && action == Action::Exit;
     if current != Action::None && !upgrade {
@@ -446,6 +466,7 @@ fn request(state: &State, action: Action, confirm: bool) -> Result<(), String> {
     if action == Action::Exit && !app.widgets.is_empty() {
         app.guard_connections_close()?;
         app.guard_sources_exit()?;
+        super::native_forms::guard_close(app)?;
         if app.editor_dirty {
             return Err("Примените или сбросьте правки перед выходом.".into());
         }
@@ -604,7 +625,7 @@ unsafe fn dispatch(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
         return 0;
     }
     if msg == TASKBAR_CREATED.load(Ordering::Relaxed) && msg != 0 && state.tray_enabled.get() {
-        if let Err(e) = tray_add(hwnd) {
+        if let Err(e) = tray_add(hwnd, state.icon.handle()) {
             report(state, e);
         }
         return 0;

@@ -153,7 +153,8 @@ def main():
             if destination.exists() and destination.read_bytes() != path.read_bytes():
                 raise ValueError(f"Conflicting release notices: {package['name']}")
             shutil.copy2(path, destination)
-    for path in (source / "src").rglob("*-LICENSE*"):
+    project_notices = list((source / "src").rglob("*-LICENSE*")) + list((source / "src").rglob("*-OFL.txt"))
+    for path in sorted(project_notices):
         destination = notices / "project" / path.relative_to(source)
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, destination)
@@ -177,6 +178,10 @@ def main():
         "Microsoft's supported runtime downloads: "
         "https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist"
         "#latest-supported-redistributable-version\n\n"
+        "The editor uses Microsoft Edge WebView2 Runtime 105 or newer. "
+        "It is not bundled; installation information: "
+        "https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution\n\n"
+        "Use `Prismestra.exe --classic-editor` for the legacy native editor if needed.\n\n"
         "Closing the editor leaves the session in the tray. "
         "Use its menu to reopen the editor, stop outputs or exit. "
         "A second launch with the same settings directory shows a tray hint.\n\n"
