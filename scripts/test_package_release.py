@@ -39,9 +39,10 @@ class PackageChecks(unittest.TestCase):
 
     def test_flume_legacy_dual_license_spelling_selects_mit(self):
         entries = release.inventory({"packages": [
-            dict(name="flume", version="0.12.0", license="Apache-2.0/MIT")
+            dict(name="flume", version="0.12.0", license="Apache-2.0/MIT"),
+            dict(name="if-addrs", version="0.15.0", license="MIT OR BSD-3-Clause"),
         ]})
-        self.assertEqual(entries[0]["distribution_license"], "MIT")
+        self.assertEqual([entry["distribution_license"] for entry in entries], ["MIT", "MIT"])
 
     def test_dirty_or_changed_checkout_is_rejected(self):
         expected = "a" * 40
