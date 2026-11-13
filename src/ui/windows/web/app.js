@@ -9,7 +9,7 @@ const pages = {library:'Сцены',editor:'Редактор',devices:'Устр�
 const glyphs = {library:'<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>',editor:'<path d="M7 3v6m0 4v8M17 3v11m0 4v3M4 9h6v4H4zm10 5h6v4h-6z"/>',devices:'<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/>',edit:'<path d="m15 4 5 5M4 20l5-1L21 7a2 2 0 0 0-5-5L4 14Z"/>',play:'<path d="m9 5 11 7-11 7Z"/>',trash:'<path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6m4-6v6"/>',plus:'<path d="M12 5v14M5 12h14"/>',sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2"/>'};
 const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true">${glyphs[name] || glyphs.devices}</svg>`;
 let state = null, draft = null, draftName = 'Текущая сцена', selectedId = null;
-let view = 'library', search = '', previewTimer = null, frame = null, commandPending = false, error = '', dialogMode = 'new', dialogReturn = null, savedSceneRequest = null, previewQueued = false, closing = false, nativeAwaitingAck = false, pendingView = null, advancedOpen = false, submittedStages = [], pointerGesture = false, keyGesture = false, composing = false, renderQueued = false;
+let view = 'library', search = '', previewTimer = null, frame = null, commandPending = false, error = '', dialogMode = 'new', dialogReturn = null, savedSceneRequest = null, previewQueued = false, closing = false, nativeAwaitingAck = false, pendingView = null, advancedOpen = false, submittedStages = [], pointerGesture = false, keyGesture = false, composing = false, renderQueued = false, awaitingCommandAck = false, errorIsCommand = false;
 const formStages = new Map();
 const busy = () => closing || !state || !!state.pending || commandPending;
 const disabled = () => busy() ? 'disabled' : '';
@@ -68,7 +68,7 @@ function nativeControlDisabled(node) {
  const id=node.dataset.nativeAction??node.dataset.nativeField;
  return closing || commandPending || !items?.some(item=>String(item.id)===id&&item.enabled);
 }
-function showError(message) {error=String(message);const box=$('#native-error');box.hidden=false;box.innerHTML=`<button class="icon-button" data-action="dismiss-error" aria-label="Закрыть сообщение">×</button><p>${esc(error)}</p>${stagedDirty()?'<button class="button" data-action="discard-fields">Отменить незавершённый ввод</button>':''}<button class="button" data-action="retry-document" data-mutation>Повторить</button>`;}
+function showError(message,fromCommand=false) {errorIsCommand=fromCommand;error=String(message);const box=$('#native-error');box.hidden=false;box.innerHTML=`<button class="icon-button" data-action="dismiss-error" aria-label="Закрыть сообщение">×</button><p>${esc(error)}</p>${stagedDirty()?'<button class="button" data-action="discard-fields">Отменить незавершённый ввод</button>':''}<button class="button" data-action="retry-document" data-mutation>Повторить</button>`;}
 function send(command, mutation=false) {
  if(closing)return false;
  const nativeCommand=['native_field','native_action'].includes(command.op);
@@ -80,7 +80,7 @@ function send(command, mutation=false) {
  if(stagedCommand&&!discardNative){if(nativeCommand){command.fields=currentNativeStages();command.editor_fields=state.pending?[]:currentGenericStages().filter(item=>state.editor.fields.find(field=>field.key===item.key)?.enabled!==false);}else command.fields=currentGenericStages();}
  if(['apply_scene','save_scene','open','save','export'].includes(command.op))flushPreview(true);
  if(!window.ipc || typeof window.ipc.postMessage !== 'function') {showError('Нет подключения к приложению Prismestra. Откройте интерфейс из нативного приложения.');return false;}
- try {window.ipc.postMessage(JSON.stringify(command));if(stagedCommand){const keys=discardNative?[...formStages].filter(([,record])=>record.page===view).map(([key])=>key):nativeCommand?[...(command.fields||[]).map(item=>stageKey('native',item.id)),...(command.editor_fields||[]).map(item=>stageKey('generic',item.key))]:(command.fields||[]).map(item=>stageKey('generic',item.key));submittedStages=keys.filter(key=>formStages.has(key)).map(key=>[key,formStages.get(key).value]);if(nativeCommand&&!discardNative){for(const [key] of submittedStages)if(formStages.get(key)?.secret)formStages.delete(key);document.querySelectorAll('[data-native-kind="secret"]').forEach(input=>{if(!formStages.has(stageKey('native',input.dataset.nativeField)))input.value='';});}}if(mutation){commandPending=true;nativeAwaitingAck=nativeCommand||stagedCommand;syncControls();}return true;}catch(e){commandPending=false;showError(e.message);syncControls();return false;}
+ try {window.ipc.postMessage(JSON.stringify(command));if(mutation||command.op==='page')awaitingCommandAck=true;if(stagedCommand){const keys=discardNative?[...formStages].filter(([,record])=>record.page===view).map(([key])=>key):nativeCommand?[...(command.fields||[]).map(item=>stageKey('native',item.id)),...(command.editor_fields||[]).map(item=>stageKey('generic',item.key))]:(command.fields||[]).map(item=>stageKey('generic',item.key));submittedStages=keys.filter(key=>formStages.has(key)).map(key=>[key,formStages.get(key).value]);if(nativeCommand&&!discardNative){for(const [key] of submittedStages)if(formStages.get(key)?.secret)formStages.delete(key);document.querySelectorAll('[data-native-kind="secret"]').forEach(input=>{if(!formStages.has(stageKey('native',input.dataset.nativeField)))input.value='';});}}if(mutation){commandPending=true;nativeAwaitingAck=nativeCommand||stagedCommand;syncControls();}return true;}catch(e){awaitingCommandAck=false;commandPending=false;showError(e.message);syncControls();return false;}
 }
 function syncControls() {
  document.querySelectorAll('[data-mutation]').forEach(node=>node.disabled=controlDisabled(node));
@@ -97,7 +97,7 @@ function syncControls() {
  const status=$('.scene-status');if(status)status.textContent=changed()?'Изменения ещё не применены':'Эта версия применена';
  const apply=$('[data-action="apply-scene"]');if(apply)apply.textContent=changed()?'Применить':'Применено';
  if(state){const art=$('#player-art'),ctx=art.getContext('2d');art.setAttribute('aria-label','Палитра применённой сцены');state.scene.colors.forEach((c,i)=>{ctx.fillStyle=hex(c);ctx.fillRect(i*art.width/state.scene.colors.length,0,Math.ceil(art.width/state.scene.colors.length),art.height);});}
- if(state?.error)showError(state.error);
+ if(state?.error)showError(state.error,true);
 }
 function palette(scene) {return `<div class="palette-art" aria-label="Палитра сцены">${scene.colors.map(c=>`<span style="background:${hex(c)}"></span>`).join('')}</div>`;}
 function heading(title,description,actions='') {return `<div class="page-heading"><div><h1>${esc(title)}</h1><p>${esc(description)}</p></div><div class="heading-actions">${actions}</div></div>`;}
@@ -183,9 +183,10 @@ window.prismestraReceive = message => {
    window.ipc.postMessage(JSON.stringify({op:'close_ready',id:message.id,scene:draft?clone(draft):null,form_dirty:stagedDirty()}));return;
   }
   if(message.kind==='close_cancelled'){closing=false;syncControls();return;}
-  if(message.kind==='error'){closing=false;submittedStages=[];savedSceneRequest=null;commandPending=false;nativeAwaitingAck=false;if(pendingView){view=pendingView.previous;pendingView=null;render();focusHeading();}showError(message.message);syncControls();return;}
+  if(message.kind==='error'){awaitingCommandAck=false;closing=false;submittedStages=[];savedSceneRequest=null;commandPending=false;nativeAwaitingAck=false;if(pendingView){view=pendingView.previous;pendingView=null;render();focusHeading();}showError(message.message,true);syncControls();return;}
   if(message.kind==='snapshot') {
-   completeStageAck();const previous=state;state=message.state;commandPending=false;nativeAwaitingAck=false;pendingView=null;
+   const acknowledged=awaitingCommandAck;awaitingCommandAck=false;completeStageAck();const previous=state;state=message.state;
+   if(acknowledged&&errorIsCommand&&!state.error){error='';errorIsCommand=false;$('#native-error').hidden=true;$('#native-error').innerHTML='';}commandPending=false;nativeAwaitingAck=false;pendingView=null;
    if(!draft){draft=clone(state.draftScene||state.scene);}else if(previous && same(draft,previous.scene)){draft=clone(state.scene);if(!selectedId)draftName='Текущая сцена';}
    if(savedSceneRequest){const saved=state.library.find(item=>(savedSceneRequest.id?item.id===savedSceneRequest.id:!savedSceneRequest.ids.includes(item.id))&&item.name===savedSceneRequest.name&&same(item.scene,savedSceneRequest.scene));if(saved){selectedId=saved.id;draftName=saved.name;savedSceneRequest=null;}}
    if(selectedId && !state.library.some(item=>item.id===selectedId))selectedId=null;
@@ -197,7 +198,7 @@ window.prismestraReceive = message => {
    if(message.state.preview)frame=message.state.preview;
    if(nativeFormChanged)render();else {syncControls();paintPreview();}if(!busy())flushPreview();
   }
- }catch(e){closing=false;commandPending=false;showError('Ошибка ответа приложения: '+e.message);syncControls();}
+ }catch(e){awaitingCommandAck=false;closing=false;commandPending=false;showError('Ошибка ответа приложения: '+e.message);syncControls();}
 };
 document.addEventListener('click',event=>{
  const b=event.target.closest('button');if(!b||b.disabled||(busy()&&b.hasAttribute('data-mutation')&&!recoveryAction(b.dataset.action)))return;
@@ -221,7 +222,7 @@ document.addEventListener('click',event=>{
  case 'discard-fields':discardPageFields();showError('Незавершённый ввод отменён.');break;
  case 'retry-document':send({op:'retry_document'},true);break;
  case 'classic':send({op:'classic',page:view},true);break;
- case 'dismiss-error':error='';$('#native-error').hidden=true;if(state)state.error=null;break;
+ case 'dismiss-error':error='';errorIsCommand=false;$('#native-error').hidden=true;if(state)state.error=null;break;
  case 'open':case 'save':case 'export':send({op:b.dataset.action},true);break;
  }
 });

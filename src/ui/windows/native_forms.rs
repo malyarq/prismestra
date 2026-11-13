@@ -88,7 +88,20 @@ fn text(hwnd: HWND) -> String {
     String::from_utf16_lossy(&buffer[..(len.max(0) as usize).min(MAX_TEXT)])
 }
 
+fn schedule_label(id: i32) -> Option<&'static str> {
+    match id {
+        SCHED_ON => Some("Включить расписание"),
+        TIME_PC => Some("Основной свет"),
+        TIME_DOOR => Some("Дополнительный свет"),
+        APPLY_SCHED => Some("Применить расписание"),
+        _ => None,
+    }
+}
+
 fn label(app: &App, id: i32, hwnd: HWND, kind: Kind) -> String {
+    if let Some(label) = schedule_label(id) {
+        return label.into();
+    }
     if kind == Kind::Action || kind == Kind::Checkbox {
         return text(hwnd);
     }
@@ -112,8 +125,6 @@ fn label(app: &App, id: i32, hwnd: HWND, kind: Kind) -> String {
     match id {
         1100 => "Раздел датчиков",
         1101 => "Датчик или результат поиска",
-        TIME_PC => "Включение ПК",
-        TIME_DOOR => "Включение ленты у двери",
         TIME_OFF => "Выключение подсветки",
         TIMEZONE => "Часовой пояс",
         E_PRESET => "Семейство",
@@ -193,6 +204,37 @@ pub(super) fn aux_snapshot(app: &App) -> Option<Value> {
     ))
 }
 
+fn fixed_led_count(preset: &crate::app::device_setup::Preset) -> Option<usize> {
+    // Preset construction validates metadata only; it does not open a device.
+    // A variable model requiring an explicit count has no default device.
+    let device = preset.device("new-device").ok()?;
+    match &device.driver {
+        crate::devices::Driver::OpenRgb | crate::devices::Driver::WledDdp => None,
+        crate::devices::Driver::SkydimoSerial { model }
+            if crate::transport::skydimo::model(model).is_some_and(|model| model.resizable) =>
+        {
+            None
+        }
+        _ => Some(device.leds),
+    }
+}
+
+fn selected_fixed_led_count(app: &App) -> Option<usize> {
+    if app.page != Page::Devices {
+        return None;
+    }
+    let hwnd = *app.widgets.get(&E_PRESET)?;
+    let selected = usize::try_from(unsafe { SendMessageW(hwnd, CB_GETCURSEL, 0, 0) }).ok()?;
+    crate::app::device_setup::catalog()
+        .get(selected)
+        .and_then(fixed_led_count)
+}
+
+fn enabled(app: &App, id: i32, hwnd: HWND) -> bool {
+    (unsafe { IsWindowEnabled(hwnd) }) != 0
+        && (id != E_LED_COUNT || selected_fixed_led_count(app).is_none())
+}
+
 fn form_snapshot(app: &App, page: &str, ids: impl IntoIterator<Item = i32>) -> Value {
     let mut fields = Vec::new();
     let mut actions = Vec::new();
@@ -201,7 +243,7 @@ fn form_snapshot(app: &App, page: &str, ids: impl IntoIterator<Item = i32>) -> V
         let Some((hwnd, kind)) = control(app, id) else {
             continue;
         };
-        let enabled = unsafe { IsWindowEnabled(hwnd) } != 0;
+        let enabled = enabled(app, id, hwnd);
         if kind == Kind::Note {
             let note = text(hwnd);
             if !note.is_empty() {
@@ -211,6 +253,9 @@ fn form_snapshot(app: &App, page: &str, ids: impl IntoIterator<Item = i32>) -> V
             actions.push(json!({"id":id,"label":label(app,id,hwnd,kind),"enabled":enabled}));
         } else {
             let value = match kind {
+                Kind::Text if id == E_LED_COUNT => selected_fixed_led_count(app)
+                    .map(|count| count.to_string())
+                    .unwrap_or_else(|| text(hwnd)),
                 Kind::Secret => String::new(),
                 Kind::Checkbox => (unsafe { SendMessageW(hwnd, BM_GETCHECK, 0, 0) }
                     == BST_CHECKED as isize)
@@ -281,7 +326,7 @@ fn checked(value: &str) -> Result<usize, String> {
 pub(super) fn set_field(app: &mut App, id: i32, value: &str) -> Result<(), String> {
     validate_text(value)?;
     let (hwnd, kind) = control(app, id).ok_or("Поле недоступно на этой странице")?;
-    if unsafe { IsWindowEnabled(hwnd) } == 0 {
+    if !enabled(app, id, hwnd) {
         return Err("Поле отключено".into());
     }
     let notice = match kind {
@@ -347,7 +392,7 @@ pub(super) fn apply_text_fields(app: &mut App, fields: &[(i32, String)]) -> Resu
     validate_batch(fields)?;
     for (id, _) in fields {
         let (hwnd, kind) = control(app, *id).ok_or("Поле недоступно на этой странице")?;
-        if !matches!(kind, Kind::Text | Kind::Secret) || unsafe { IsWindowEnabled(hwnd) } == 0 {
+        if !matches!(kind, Kind::Text | Kind::Secret) || !enabled(app, *id, hwnd) {
             return Err("Текстовое поле недоступно".into());
         }
     }
@@ -411,6 +456,7 @@ pub(super) fn action(state: &State, id: i32) -> Result<(), String> {
         if app.page != Page::Schedule || !schedule_dirty(app) {
             return Err("Нет изменений расписания для отмены".into());
         }
+        app.status = "Изменения расписания отменены.".into();
         app.sync();
         return Ok(());
     }
@@ -434,6 +480,32 @@ pub(super) fn action(state: &State, id: i32) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fixed_led_metadata_matches_existing_preset_validator() {
+        for (id, count) in [
+            ("home-assistant-light", 1),
+            ("door20", 20),
+            ("tt-lcd", 0),
+            ("ene8", 8),
+            ("vk99", 102),
+            ("fusion2-27-27", 54),
+        ] {
+            let preset = crate::app::device_setup::preset(id).unwrap();
+            assert_eq!(fixed_led_count(preset), Some(count), "{id}");
+            assert!(preset.device_with_leds("new-device", count).is_ok());
+            assert!(preset.device_with_leds("new-device", count + 1).is_err());
+        }
+        for id in ["openrgb-controller", "wled-ddp", "SK0410"] {
+            let preset = crate::app::device_setup::preset(id).unwrap();
+            assert_eq!(fixed_led_count(preset), None, "{id}");
+            assert!(preset.device_with_leds("new-device", 12).is_ok());
+        }
+        assert_eq!(schedule_label(SCHED_ON), Some("Включить расписание"));
+        assert_eq!(schedule_label(TIME_PC), Some("Основной свет"));
+        assert_eq!(schedule_label(TIME_DOOR), Some("Дополнительный свет"));
+        assert_eq!(schedule_label(APPLY_SCHED), Some("Применить расписание"));
+    }
+
     #[test]
     fn auxiliary_controls_match_native_page_visibility() {
         for page in [Page::Devices, Page::Ambient, Page::Lcd, Page::Temperatures] {
