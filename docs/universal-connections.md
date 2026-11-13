@@ -19,11 +19,13 @@ DNS-SD browses `_wled._tcp.local.` and `_home-assistant._tcp.local.` for at most
 
 WLED metadata supports upstream default counts through 16384; larger custom builds require a separately verified extension. A changed IP can be rediscovered using the controller's identity. Rediscovery/Apply is currently required for address changes; no claim of automatic roaming across DHCP addresses is made.
 
-## Restore a previously working output
+## Recover a device connection
 
-Native activation enables bounded recovery for registered RGB and LCD outputs. Recovery is armed after a successful transport submission. A failed and fully reaped output can reopen after 1, 5 and 15 seconds, at most three attempts per configuration/power epoch. A successful retry does not replenish this budget. Initial connection failures remain explicit errors. Configuration changes, shutdown and suspend cancel pending attempts; capture and temperature readers do not inherit this policy.
+Native activation enables bounded recovery for registered RGB and LCD outputs, including an initial connection failure before the first frame. A failed and fully reaped output can reopen after 1, 5 and 15 seconds, at most three attempts per configuration/power epoch. A successful retry does not replenish this budget. Configuration changes, shutdown and suspend cancel pending attempts; capture and temperature readers do not inherit this policy.
 
 Recovery revalidates saved identity/capacity and republishes current scene intent, including Off, instead of replaying an old frame. It does not restart healthy outputs. Errors are not yet classified by protocol: authentication or changed-topology failures also consume the finite budget and then require manual correction. A synchronous start/lease error may remain in global diagnostics after a later successful recovery.
+
+Device properties show submitted-frame counts, including on failure. Surplife errors identify capability-query stages separately from E104 frame submission. A transient EA81 timeout was observed on the current controller before any color frame; later read-only queries succeeded. Initial-failure recovery handles that failure path, while the cause of the underlying timeout remains unconfirmed.
 
 ## Evidence
 
