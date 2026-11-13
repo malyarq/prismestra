@@ -121,3 +121,9 @@ vm.runInContext('window.prismestraReceive({kind:"status",state:{error:null,pendi
 vm.runInContext('send({op:"native_action",id:410},true);window.prismestraReceive(payload)',context);assert.equal(find('#native-error').hidden,true,'new successful command snapshot clears old command error');assert.equal(find('#native-error').innerHTML,'','stale notice actions are removed');assert.equal(vm.runInContext('stagedDirty()',context),false);
 context.payload={kind:'snapshot',state:{...structuredClone(initial),nativeAux:structuredClone(aux),error:'Provider still unavailable'}};vm.runInContext('send({op:"native_action",id:410},true);window.prismestraReceive(payload)',context);assert.equal(find('#native-error').hidden,false);assert.ok(find('#native-error').innerHTML.includes('Provider still unavailable'),'successful ack cannot hide an actual backend error');
 console.log('PASS: failed snapshot/status retain command error; causal successful ack removes stale error/actions; current backend error remains');
+vm.runInContext('view="devices";state.editor={page:"devices",index:0,targets:["Strip"],fields:[],dirty:false};state.detail="Ошибка RGB: <test>";render()',context);
+assert.ok(find('#main').innerHTML.includes('Ошибка RGB: &lt;test&gt;'));
+context.payload={kind:'status',state:{detail:'RGB: передано кадров 153'}};
+vm.runInContext('window.prismestraReceive(payload)',context);
+assert.equal(find('#native-runtime-detail').textContent,'RGB: передано кадров 153');
+console.log('PASS: selected output diagnostics are escaped and update from runtime status messages');
