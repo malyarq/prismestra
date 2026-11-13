@@ -189,7 +189,7 @@ impl App {
             EnableWindow(self.h(STOP), i32::from(running && !self.shutdown.active()));
         }
     }
-    fn start_bound_sources(&mut self) -> Result<(), String> {
+    pub(in crate::ui::windows) fn start_bound_sources(&mut self) -> Result<(), String> {
         if self.shutdown.active()
             || self.pending_open.is_some()
             || !self.runtime.temperature_input_ready()

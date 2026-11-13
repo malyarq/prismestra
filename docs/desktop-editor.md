@@ -20,4 +20,6 @@ Settings directories now also contain `scene-library.json`, `editor-scene-draft.
 
 ## Verification boundaries
 
+For a configured local profile, `Prismestra.exe --project profile.json --state-dir state --start-connected` opens the saved hardware outputs and starts the exact saved temperature routes at startup. The connection file is `state/lighting-local.json`; assets and sensor routes remain in the same state directory as the editor. Missing or incompatible bindings produce an error rather than selecting another device or inventing temperatures. No discovery runs automatically. The flag requires an explicit profile and is forbidden in snapshots and selftests. Without the flag, startup remains a software preview. Source: [startup options](../src/ui/windows.rs), [saved source subscriptions](../src/ui/windows/sources/bindings.rs).
+
 The source has Rust, frontend-IPC and packaging checks. New UI and hardware acceptance must identify the exact tested executable revision. Existing Preview3 device records do not prove a new WebView2 build's physical behavior, interaction, clean-machine readiness or resource use. Source review of controller teardown is not a measurement that browser processes have exited.

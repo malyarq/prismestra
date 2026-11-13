@@ -118,6 +118,7 @@ fn wall() -> i64 {
 #[derive(Default)]
 struct Options {
     native_lighting: Option<PathBuf>,
+    start_connected: bool,
     project: Option<PathBuf>,
     setup: Option<PathBuf>,
     scene: Option<PathBuf>,
@@ -136,6 +137,13 @@ fn options(args: Vec<OsString>) -> Result<Options, String> {
     let mut it = args.into_iter();
     while let Some(key) = it.next() {
         let key = key.to_str().ok_or("Invalid option encoding")?;
+        if key == "--start-connected" {
+            if o.start_connected {
+                return Err("Duplicate start-connected option".into());
+            }
+            o.start_connected = true;
+            continue;
+        }
         if key == "--classic-editor" {
             o.classic_editor = true;
             continue;
@@ -212,16 +220,17 @@ fn options(args: Vec<OsString>) -> Result<Options, String> {
                 })
             }
             _ => {
-                return Err(format!(
-                    "Unknown option{key}; no hardware mode exists in this preview UI"
-                ));
+                return Err(format!("Unknown option{key}"));
             }
         }
     }
     if o.project.is_some() && (o.setup.is_some() || o.scene.is_some()) {
         return Err("Useproject ORsetup+scene".into());
     }
-    if o.native_lighting.is_some() && (o.selftest || o.snapshot.is_some()) {
+    if o.start_connected && (o.project.is_none() || o.native_lighting.is_some()) {
+        return Err("Use --start-connected with --project and saved local connections".into());
+    }
+    if (o.native_lighting.is_some() || o.start_connected) && (o.selftest || o.snapshot.is_some()) {
         return Err("Native lighting is forbidden in snapshots and selftests".into());
     }
     if o.allow_sensor_discovery && (o.selftest || o.snapshot.is_some()) {
@@ -2823,6 +2832,9 @@ fn run_inner(args: Vec<OsString>) -> Result<(), String> {
         state_dir
     };
     std::fs::create_dir_all(&state_dir).map_err(|e| e.to_string())?;
+    if o.start_connected {
+        o.native_lighting = Some(state_dir.join("lighting-local.json"));
+    }
     if o.selftest && o.snapshot.is_none() {
         o.snapshot = Some(state_dir.join("diagnostics/selftest.png"));
     }
@@ -3005,7 +3017,7 @@ fn run_inner(args: Vec<OsString>) -> Result<(), String> {
             app.open_connections()?;
         }
 
-        // Merely grant capabilities here; neither metadata nor readers run at load.
+        // Preview grants capabilities only; connected startup explicitly starts saved routes.
         let native_sources = native_sources_allowed(o.snapshot.is_some(), o.selftest);
         app.sources.native_allowed = native_sources;
         app.sources.scan_factory = (native_sources || o.allow_sensor_discovery)
@@ -3017,6 +3029,9 @@ fn run_inner(args: Vec<OsString>) -> Result<(), String> {
         }
         if o.source_discovery_page {
             app.select_source_discovery();
+        }
+        if o.start_connected && !app.source_scope_inputs()?.1.is_empty() {
+            app.start_bound_sources()?;
         }
         Ok(())
     });
@@ -3931,6 +3946,27 @@ fn native_device_setup(hwnd: HWND, state: &State) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn connected_startup_requires_a_profile_and_excludes_diagnostics_and_legacy_mode() {
+        assert!(!options(vec![]).unwrap().start_connected);
+        assert!(options(vec!["--start-connected".into()]).is_err());
+        let args = vec![
+            "--start-connected".into(),
+            "--project".into(),
+            "profile.json".into(),
+        ];
+        assert!(options(args.clone()).unwrap().start_connected);
+        for tail in [
+            vec!["--selftest"],
+            vec!["--snapshot", "screen.png"],
+            vec!["--native-lighting", "local.json"],
+            vec!["--start-connected"],
+        ] {
+            let mut rejected = args.clone();
+            rejected.extend(tail.into_iter().map(OsString::from));
+            assert!(options(rejected).is_err());
+        }
+    }
     #[test]
     fn native_lighting_requires_explicit_private_file_and_cannot_run_in_capture_tests() {
         for flag in ["--allow-nvidia-discovery", "--allow-sensor-discovery"] {
