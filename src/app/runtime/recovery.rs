@@ -1,17 +1,15 @@
-//! Opt-in bounded recovery for previously working, explicitly bound outputs.
+//! Opt-in bounded recovery for explicitly bound outputs, including initial failures.
 use super::*;
 
 #[derive(Default)]
 pub(super) struct Recovery {
-    armed: bool,
     attempts: usize,
     failed_generation: Option<u64>,
     due_us: Option<u64>,
 }
 impl Recovery {
-    fn observe(&mut self, generation: u64, submitted: bool, failed: bool, now: u64) {
-        self.armed |= submitted;
-        if self.armed && failed && self.failed_generation != Some(generation) {
+    fn observe(&mut self, generation: u64, failed: bool, now: u64) {
+        if failed && self.failed_generation != Some(generation) {
             self.failed_generation = Some(generation);
             self.due_us = [1_000_000, 5_000_000, 15_000_000]
                 .get(self.attempts)
@@ -31,8 +29,8 @@ impl Recovery {
 }
 
 impl Runtime {
-    /// Enable at most three reconnects (1/5/15s) after a successful submission.
-    /// Initial connection failures remain terminal. Budget is renewed only by
+    /// Enable at most three reconnects (1/5/15s), including initial connection failures.
+    /// Success does not replenish the budget. Budget is renewed only by
     /// an explicit configuration/refresh/power epoch, never by a flapping light.
     /// Errors are untyped, so even auth/topology failures use this finite budget.
     pub fn enable_output_recovery(&mut self, id: &str) -> Result<(), String> {
@@ -74,14 +72,14 @@ impl Runtime {
                     continue;
                 };
                 let failed = snapshot.phase == crate::runtime::output::Phase::Failed;
-                state.observe(snapshot.generation, snapshot.submitted > 0, failed, now);
+                state.observe(snapshot.generation, failed, now);
                 if failed && state.take_attempt(now, self.host.output_reaped(id)) {
                     rgb.push((id.clone(), spec.keys.clone(), spec.factory.clone()));
                 }
             } else if let (Some(spec), Some(worker)) = (self.lcd_specs.get(id), self.lcd.get(id)) {
                 let snapshot = worker.snapshot();
                 let failed = snapshot.phase == lcd_worker::Phase::Failed;
-                state.observe(snapshot.generation, snapshot.frames_sent > 0, failed, now);
+                state.observe(snapshot.generation, failed, now);
                 if failed && state.take_attempt(now, worker.is_reaped()) {
                     lcd.push((id.clone(), spec.keys.clone(), spec.factory.clone()));
                 }
@@ -130,17 +128,17 @@ mod tests {
     #[test]
     fn recovery_delays_and_budget_also_bound_failed_reconnection_factories() {
         let mut state = Recovery::default();
-        state.observe(1, false, true, 0);
+        state.observe(1, false, 0);
         assert!(!state.take_attempt(u64::MAX, true));
         let mut now = 0;
         for (generation, delay) in [(1, 1_000_000), (2, 5_000_000), (3, 15_000_000)] {
-            state.observe(generation, generation == 1, true, now);
+            state.observe(generation, true, now);
             assert!(!state.take_attempt(now + delay - 1, true));
             assert!(!state.take_attempt(now + delay, false));
             now += delay;
             assert!(state.take_attempt(now, true));
         }
-        state.observe(4, false, true, now);
+        state.observe(4, true, now);
         assert!(!state.take_attempt(u64::MAX, true));
     }
 }

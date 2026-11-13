@@ -123,12 +123,11 @@ fn drain(runtime: &mut Runtime) {
 }
 
 #[test]
-fn recovery_initial_failure_and_default_policy_remain_terminal() {
+fn recovery_default_policy_keeps_initial_and_later_failures_terminal() {
     let mut runtime = runtime();
     let link = Arc::new(Link::default());
     link.fail_open.store(true, Ordering::SeqCst);
     runtime.attach_rgb("a", vec![], factory(&link)).unwrap();
-    runtime.enable_output_recovery("a").unwrap();
     assert!(runtime.enable_output_recovery("missing").is_err());
     wait(|| runtime.host.status("a").unwrap().phase == Phase::Failed);
     for now in [1, 2_000_000, 40_000_000] {
@@ -144,6 +143,83 @@ fn recovery_initial_failure_and_default_policy_remain_terminal() {
     working(&mut runtime, "a", &mut now);
     disconnected(&mut runtime, &link, "a", &mut now);
     runtime.tick(now + 40_000_000, 1_800_000_000).unwrap();
+    assert_eq!(link.calls.load(Ordering::SeqCst), 1);
+    drain(&mut runtime);
+}
+
+#[test]
+fn recovery_initial_factory_failure_then_success_reopens_without_prior_submission() {
+    let mut runtime = runtime();
+    let link = Arc::new(Link::default());
+    link.fail_open.store(true, Ordering::SeqCst);
+    runtime.attach_rgb("a", vec![], factory(&link)).unwrap();
+    runtime.enable_output_recovery("a").unwrap();
+    wait(|| runtime.host.status("a").unwrap().phase == Phase::Failed);
+    let initial = runtime.host.status("a").unwrap();
+    assert_eq!(initial.submitted, 0);
+    let mut now = 0;
+    tick(&mut runtime, &mut now);
+    let due = now + 1_000_000;
+    link.fail_open.store(false, Ordering::SeqCst);
+    runtime.tick(due - 1, 1_800_000_000).unwrap();
+    assert_eq!(link.calls.load(Ordering::SeqCst), 1);
+    now = due;
+    working(&mut runtime, "a", &mut now);
+    assert_eq!(link.calls.load(Ordering::SeqCst), 2);
+    assert_ne!(
+        runtime.host.status("a").unwrap().generation,
+        initial.generation
+    );
+    drain(&mut runtime);
+}
+
+#[test]
+fn recovery_repeated_initial_factory_failures_exhaust_three_attempts() {
+    let mut runtime = runtime();
+    let link = Arc::new(Link::default());
+    link.fail_open.store(true, Ordering::SeqCst);
+    runtime.attach_rgb("a", vec![], factory(&link)).unwrap();
+    runtime.enable_output_recovery("a").unwrap();
+    wait(|| runtime.host.status("a").unwrap().phase == Phase::Failed);
+    let mut now = 0;
+    for delay in [1_000_000, 5_000_000, 15_000_000] {
+        tick(&mut runtime, &mut now);
+        let previous = runtime.host.status("a").unwrap().generation;
+        let due = now + delay;
+        runtime.tick(due - 1, 1_800_000_000).unwrap();
+        assert_eq!(runtime.host.status("a").unwrap().generation, previous);
+        now = due;
+        runtime.tick(now, 1_800_000_000).unwrap();
+        wait(|| {
+            let snapshot = runtime.host.status("a").unwrap();
+            snapshot.generation != previous && snapshot.phase == Phase::Failed
+        });
+    }
+    now += 100_000_000;
+    tick(&mut runtime, &mut now);
+    runtime.enable_registered_output_recovery(); // Enabling again cannot renew the budget.
+    now += 100_000_000;
+    tick(&mut runtime, &mut now);
+    assert_eq!(link.calls.load(Ordering::SeqCst), 4);
+    assert_eq!(runtime.host.status("a").unwrap().submitted, 0);
+    assert_eq!(runtime.host.status("a").unwrap().phase, Phase::Failed);
+    drain(&mut runtime);
+}
+
+#[test]
+fn recovery_stop_cancels_pending_initial_connection_retry() {
+    let mut runtime = runtime();
+    let link = Arc::new(Link::default());
+    link.fail_open.store(true, Ordering::SeqCst);
+    runtime.attach_rgb("a", vec![], factory(&link)).unwrap();
+    runtime.enable_output_recovery("a").unwrap();
+    wait(|| runtime.host.status("a").unwrap().phase == Phase::Failed);
+    let mut now = 0;
+    tick(&mut runtime, &mut now);
+    runtime.stop();
+    now += 100_000_000;
+    runtime.recover_failed_outputs(now).unwrap();
+    assert!(runtime.tick(now, 1_800_000_000).is_err());
     assert_eq!(link.calls.load(Ordering::SeqCst), 1);
     drain(&mut runtime);
 }

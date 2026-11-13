@@ -1815,7 +1815,7 @@ impl App {
                         |s| {
                             s.error.map_or_else(
                                 || format!("RGB: передано кадров {}", s.submitted),
-                                |e| format!("Ошибка RGB: {e}"),
+                                |e| format!("Ошибка RGB (передано кадров {}): {e}", s.submitted),
                             )
                         },
                     )

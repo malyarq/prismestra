@@ -273,7 +273,9 @@ impl Link for WindowsLink {
             inner: control,
             started,
         };
-        let result = self.query_pixel_capacity(&mut budget);
+        let result = self
+            .query_pixel_capacity(&mut budget)
+            .map_err(|e| format!("Surplife EA81 capability query: {e}"));
         match result {
             Ok(points) => {
                 self.pixel_capacity = Some(points);
@@ -299,17 +301,20 @@ impl Link for WindowsLink {
         sequence: u8,
         control: &mut dyn Control,
     ) -> Result<(), String> {
-        if self.pixel_capacity != Some(colors.len()) {
-            return Err("Pixel frame does not match current EA81 capability handshake".into());
-        }
-        ble::write_e1_pixel_frame(
-            colors,
-            brightness,
-            sequence,
-            self.max_pdu()?,
-            control,
-            &mut |packet, control| self.submit_raw(packet, control),
-        )
+        (|| {
+            if self.pixel_capacity != Some(colors.len()) {
+                return Err("Pixel frame does not match current EA81 capability handshake".into());
+            }
+            ble::write_e1_pixel_frame(
+                colors,
+                brightness,
+                sequence,
+                self.max_pdu()?,
+                control,
+                &mut |packet, control| self.submit_raw(packet, control),
+            )
+        })()
+        .map_err(|e| format!("Surplife E104 frame: {e}"))
     }
     fn address(&self) -> Result<u64, String> {
         self.device
@@ -355,117 +360,126 @@ impl Link for WindowsLink {
 }
 impl WindowsLink {
     fn query_pixel_capacity(&mut self, control: &mut dyn Control) -> Result<usize, String> {
-        let started = control.now();
-        ble::check_wait(control, started)?;
-        let chars = bounded!(
-            self.service
-                .as_ref()
-                .unwrap()
-                .GetCharacteristicsForUuidWithCacheModeAsync(
-                    uuid(0xff02),
-                    BluetoothCacheMode::Uncached
-                ),
-            control
-        )
-        .map_err(error)?;
-        let list = chars.Characteristics().map_err(error)?;
-        if chars.Status().map_err(error)? != GattCommunicationStatus::Success
-            || list.Size().map_err(error)? != 1
-        {
-            return Err("FF02 notification characteristic unavailable or ambiguous".into());
-        }
-        let characteristic = list.GetAt(0).map_err(error)?;
-        if (characteristic.CharacteristicProperties().map_err(error)?
-            & GattCharacteristicProperties::Notify)
-            == GattCharacteristicProperties::None
-        {
-            return Err("FF02 has no notification support".into());
-        }
-        let received = Arc::new(Mutex::new(None));
-        let armed = Arc::new(AtomicBool::new(false));
-        let callback_received = received.clone();
-        let callback_armed = armed.clone();
-        let callback = TypedEventHandler::<GattCharacteristic, GattValueChangedEventArgs>::new(
-            move |_, args| {
-                if !callback_armed.load(Ordering::Acquire) {
-                    return Ok(());
-                }
-                if let Some(args) = args.as_ref() {
-                    let buffer = args.CharacteristicValue()?;
-                    let length = buffer.Length()? as usize;
-                    let parsed = if length > 4096 {
-                        Err("EA81 notification exceeds host limit".into())
-                    } else {
-                        let reader = DataReader::FromBuffer(&buffer)?;
-                        let mut packet = vec![0; length];
-                        let read = reader.ReadBytes(&mut packet);
-                        let _ = reader.Close();
-                        read?;
-                        ble::parse_pixel_capacity(&packet)
-                    };
-                    let result = match parsed {
-                        Ok(None) => return Ok(()),
-                        Ok(Some(points)) => Ok(points),
-                        Err(e) => Err(e),
-                    };
-                    let mut slot = callback_received.lock().unwrap_or_else(|e| e.into_inner());
-                    if slot.is_none() {
-                        *slot = Some(result);
-                    }
-                }
-                Ok(())
-            },
-        );
-        let mut subscription = Notification {
-            characteristic,
-            token: None,
-        };
-        subscription.token = Some(
-            subscription
-                .characteristic
-                .ValueChanged(&callback)
-                .map_err(error)?,
-        );
-        let status = bounded!(
-            subscription
-                .characteristic
-                .WriteClientCharacteristicConfigurationDescriptorAsync(
-                    GattClientCharacteristicConfigurationDescriptorValue::Notify
-                ),
-            control
-        )
-        .map_err(error)?;
-        if status != GattCommunicationStatus::Success {
-            return Err("FF02 notification subscription failed".into());
-        }
-        // No cached notification is accepted. Arm immediately before the fixed query so
-        // a response arriving during WriteWithoutResponse completion is not missed.
-        armed.store(true, Ordering::Release);
+        let mut stage = "discover FF02";
         let result = (|| {
-            self.submit_raw(&ble::PIXEL_CAPACITY_QUERY, control)?;
-            ble::wait_pixel_capacity(control, started, &mut || {
-                received.lock().unwrap_or_else(|e| e.into_inner()).take()
-            })
-        })();
-        armed.store(false, Ordering::Release);
-        // Normal completion disables remote notifications within the same total budget.
-        // On any error the caller closes the connection; Drop revokes the callback.
-        if result.is_ok() {
+            let started = control.now();
+            ble::check_wait(control, started)?;
+            let chars = bounded!(
+                self.service
+                    .as_ref()
+                    .unwrap()
+                    .GetCharacteristicsForUuidWithCacheModeAsync(
+                        uuid(0xff02),
+                        BluetoothCacheMode::Uncached
+                    ),
+                control
+            )
+            .map_err(error)?;
+            let list = chars.Characteristics().map_err(error)?;
+            if chars.Status().map_err(error)? != GattCommunicationStatus::Success
+                || list.Size().map_err(error)? != 1
+            {
+                return Err("FF02 notification characteristic unavailable or ambiguous".into());
+            }
+            let characteristic = list.GetAt(0).map_err(error)?;
+            if (characteristic.CharacteristicProperties().map_err(error)?
+                & GattCharacteristicProperties::Notify)
+                == GattCharacteristicProperties::None
+            {
+                return Err("FF02 has no notification support".into());
+            }
+            let received = Arc::new(Mutex::new(None));
+            let armed = Arc::new(AtomicBool::new(false));
+            let callback_received = received.clone();
+            let callback_armed = armed.clone();
+            let callback = TypedEventHandler::<GattCharacteristic, GattValueChangedEventArgs>::new(
+                move |_, args| {
+                    if !callback_armed.load(Ordering::Acquire) {
+                        return Ok(());
+                    }
+                    if let Some(args) = args.as_ref() {
+                        let parsed = (|| -> Result<Option<usize>, String> {
+                            let buffer = args.CharacteristicValue().map_err(error)?;
+                            let length = buffer.Length().map_err(error)? as usize;
+                            if length > 4096 {
+                                return Err("EA81 notification exceeds host limit".into());
+                            }
+                            let reader = DataReader::FromBuffer(&buffer).map_err(error)?;
+                            let mut packet = vec![0; length];
+                            let read = reader.ReadBytes(&mut packet);
+                            let _ = reader.Close();
+                            read.map_err(error)?;
+                            ble::parse_pixel_capacity(&packet)
+                        })();
+                        let result = match parsed {
+                            Ok(None) => return Ok(()),
+                            Ok(Some(points)) => Ok(points),
+                            Err(e) => Err(e),
+                        };
+                        let mut slot = callback_received.lock().unwrap_or_else(|e| e.into_inner());
+                        if slot.is_none() {
+                            *slot = Some(result);
+                        }
+                    }
+                    Ok(())
+                },
+            );
+            let mut subscription = Notification {
+                characteristic,
+                token: None,
+            };
+            subscription.token = Some(
+                subscription
+                    .characteristic
+                    .ValueChanged(&callback)
+                    .map_err(error)?,
+            );
+            stage = "subscribe FF02";
             let status = bounded!(
                 subscription
                     .characteristic
                     .WriteClientCharacteristicConfigurationDescriptorAsync(
-                        GattClientCharacteristicConfigurationDescriptorValue::None
+                        GattClientCharacteristicConfigurationDescriptorValue::Notify
                     ),
                 control
             )
             .map_err(error)?;
             if status != GattCommunicationStatus::Success {
-                return Err("FF02 notification unsubscribe failed".into());
+                return Err("FF02 notification subscription failed".into());
             }
-        }
-        ble::check_wait(control, started)?;
-        result
+            // No cached notification is accepted. Arm immediately before the fixed query so
+            // a response arriving during WriteWithoutResponse completion is not missed.
+            armed.store(true, Ordering::Release);
+            let result = (|| {
+                stage = "send EA81";
+                self.submit_raw(&ble::PIXEL_CAPACITY_QUERY, control)?;
+                stage = "wait for EA81 notification";
+                ble::wait_pixel_capacity(control, started, &mut || {
+                    received.lock().unwrap_or_else(|e| e.into_inner()).take()
+                })
+            })();
+            armed.store(false, Ordering::Release);
+            // Normal completion disables remote notifications within the same total budget.
+            // On any error the caller closes the connection; Drop revokes the callback.
+            if result.is_ok() {
+                stage = "unsubscribe FF02";
+                let status = bounded!(
+                    subscription
+                        .characteristic
+                        .WriteClientCharacteristicConfigurationDescriptorAsync(
+                            GattClientCharacteristicConfigurationDescriptorValue::None
+                        ),
+                    control
+                )
+                .map_err(error)?;
+                if status != GattCommunicationStatus::Success {
+                    return Err("FF02 notification unsubscribe failed".into());
+                }
+            }
+            ble::check_wait(control, started)?;
+            result
+        })();
+        result.map_err(|e| format!("{stage}: {e}"))
     }
     fn submit_raw(&mut self, packet: &[u8], control: &mut dyn Control) -> Result<(), String> {
         if control.cancelled() {
