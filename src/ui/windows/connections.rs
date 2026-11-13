@@ -239,11 +239,11 @@ impl App {
         match id {
             ENDPOINT | ENDPOINT_LABEL => self.connections.current().is_some(),
             IDENTITY | IDENTITY_LABEL => {
-                matches!(self.connections.current(),Some(BindingTarget::Device(d)) if matches!(d.driver,crate::devices::Driver::HomeAssistant|crate::devices::Driver::SkydimoSerial{..}|crate::devices::Driver::EneDram))
+                matches!(self.connections.current(),Some(BindingTarget::Device(d)) if matches!(d.driver,crate::devices::Driver::HomeAssistant|crate::devices::Driver::WledDdp|crate::devices::Driver::SkydimoSerial{..}|crate::devices::Driver::EneDram))
             }
             SAVE_KEY => self.connections.home_assistant(),
             SERIAL | SERIAL_LABEL => {
-                matches!(self.connections.current(),Some(BindingTarget::Device(d)) if matches!(d.driver,crate::devices::Driver::HomeAssistant|crate::devices::Driver::SkydimoSerial{..}))
+                matches!(self.connections.current(),Some(BindingTarget::Device(d)) if matches!(d.driver,crate::devices::Driver::HomeAssistant|crate::devices::Driver::WledDdp|crate::devices::Driver::SkydimoSerial{..}))
             }
             _ => true,
         }
@@ -427,7 +427,7 @@ impl App {
             None => "Подключение",
         };
         self.set_text(ENDPOINT_LABEL, label);
-        self.set_text(IDENTITY_LABEL,if self.connections.home_assistant(){"Светильник (light.office)"}else if matches!(self.connections.current(),Some(BindingTarget::Device(d)) if matches!(d.driver,crate::devices::Driver::EneDram)){"Адрес RAM (0x70..0x76)"}else{"USB instance (из метаданных)"});
+        self.set_text(IDENTITY_LABEL,if self.connections.home_assistant(){"Светильник (light.office)"}else if self.connections.wled(){"Идентичность WLED (из поиска)"}else if matches!(self.connections.current(),Some(BindingTarget::Device(d)) if matches!(d.driver,crate::devices::Driver::EneDram)){"Адрес RAM (0x70..0x76)"}else{"USB instance (из метаданных)"});
         self.refresh_connections();
         self.connections_layout(self.width, self.height);
         self.show_page();
@@ -452,7 +452,12 @@ impl App {
                     .count()
         });
         let note = if !self.connections.scan.is_idle() {
-            "Поиск метаданных… Порты и BLE не подключаются, RGB-команды не отправляются.".into()
+            if matches!(self.connections.current(),Some(BindingTarget::Device(d)) if d.driver == crate::devices::Driver::SurplifeE1Pixels)
+            {
+                "Проверка Surplife: подключение по BLE и чтение возможностей; цвет и конфигурация не меняются.".into()
+            } else {
+                "Поиск устройств… RGB-команды не отправляются.".into()
+            }
         } else if self.connections.targets.is_empty() {
             format!(
                 "Сначала добавьте устройство на вкладке «Устройства» или источник экрана. Привязок удалённых источников: {n}."
