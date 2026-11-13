@@ -32,3 +32,15 @@ Device properties show submitted-frame counts, including on failure. Surplife er
 Implementations: [discovery](../src/app/lighting_bindings/discovery.rs), [WLED metadata](../src/transport/wled_info.rs), [DNS-SD](../src/transport/service_discovery.rs), [HA capabilities](../src/devices/home_assistant.rs), [E1 codec](../src/lighting/door.rs), [BLE transport](../src/transport/ble.rs), [recovery](../src/app/runtime/recovery.rs).
 
 Software checks include real Windows HTTP/UDP loopback fixtures, identity/count rejection before UDP output, capability conversion, protocol fragments and fake-driver recovery/lease scenarios. Hardware evidence for the previous 153-point implementation remains [revision-specific](surplife-e1-pixels.md). WLED/HA physical output, a second BLE controller/different physical length and real unplug/reconnect are not confirmed by these software checks.
+
+Hardware coverage is recorded separately from software delivery. Missing test hardware does not block development or make a software fixture count as physical acceptance.
+
+| Path | Software evidence | Physical coverage |
+| --- | --- | --- |
+| OpenRGB SDK6 | Inventory, identity/topology checks and native output pipeline | Current PC kit only; device support also depends on OpenRGB |
+| WLED | [Discovery, saved metadata, geometry, native HTTP/UDP output, MAC ownership and replacement rejection](../tests/wled_pipeline.rs) | Unverified |
+| Home Assistant | [Binding and capability tests](../tests/home_assistant_bindings.rs), HTTP fixtures and command mapping | Unverified |
+| Surplife E1 | Codec, capacity validation and [notification read-error propagation](../src/transport/ble_windows.rs) | Current 153-point controller only; other controllers/lengths unverified |
+| LCD | Worker, lifecycle and output tests | Current Thermaltake screen only |
+
+Loopback HTTP/UDP tests exercise the real software transport against local fixtures. Notification tests inject a read failure into the callback's shared-result path; they do not reproduce a real WinRT or radio failure. Physical unplug/replug remains unverified for all paths.

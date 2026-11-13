@@ -35,6 +35,25 @@ fn uuid(short: u16) -> GUID {
     GUID::from_u128((short as u128) << 96 | 0x00001000800000805f9b34fb)
 }
 
+fn receive_pixel_capacity(
+    armed: &AtomicBool,
+    received: &Mutex<Option<Result<usize, String>>>,
+    read: impl FnOnce() -> Result<Option<usize>, String>,
+) {
+    if !armed.load(Ordering::Acquire) {
+        return;
+    }
+    let result = match read() {
+        Ok(None) => return,
+        Ok(Some(points)) => Ok(points),
+        Err(e) => Err(e),
+    };
+    let mut slot = received.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.is_none() {
+        *slot = Some(result);
+    }
+}
+
 // Macro preserves each operation's concrete projected type without requiring windows-future publicly.
 macro_rules! bounded {
     ($operation:expr, $control:expr) => {{
@@ -394,11 +413,8 @@ impl WindowsLink {
             let callback_armed = armed.clone();
             let callback = TypedEventHandler::<GattCharacteristic, GattValueChangedEventArgs>::new(
                 move |_, args| {
-                    if !callback_armed.load(Ordering::Acquire) {
-                        return Ok(());
-                    }
-                    if let Some(args) = args.as_ref() {
-                        let parsed = (|| -> Result<Option<usize>, String> {
+                    receive_pixel_capacity(&callback_armed, &callback_received, || {
+                        if let Some(args) = args.as_ref() {
                             let buffer = args.CharacteristicValue().map_err(error)?;
                             let length = buffer.Length().map_err(error)? as usize;
                             if length > 4096 {
@@ -410,17 +426,10 @@ impl WindowsLink {
                             let _ = reader.Close();
                             read.map_err(error)?;
                             ble::parse_pixel_capacity(&packet)
-                        })();
-                        let result = match parsed {
-                            Ok(None) => return Ok(()),
-                            Ok(Some(points)) => Ok(points),
-                            Err(e) => Err(e),
-                        };
-                        let mut slot = callback_received.lock().unwrap_or_else(|e| e.into_inner());
-                        if slot.is_none() {
-                            *slot = Some(result);
+                        } else {
+                            Ok(None)
                         }
-                    }
+                    });
                     Ok(())
                 },
             );
@@ -517,6 +526,49 @@ impl WindowsLink {
 mod tests {
     use super::*;
     use std::time::Duration;
+    #[test]
+    fn notification_read_error_reaches_capacity_wait_without_sleeping() {
+        let received = Mutex::new(None);
+        let armed = AtomicBool::new(true);
+        let read_error = "WinRT error: injected ReadBytes failure; disconnected";
+        receive_pixel_capacity(&armed, &received, || Err(read_error.into()));
+        let mut clock = Clock {
+            time: Duration::ZERO,
+            cancel: false,
+        };
+        let result = ble::wait_pixel_capacity(&mut clock, Duration::ZERO, &mut || {
+            received.lock().unwrap().take()
+        });
+        assert_eq!(result, Err(read_error.into()));
+        assert_eq!(clock.time, Duration::ZERO);
+    }
+    #[test]
+    fn disarmed_notification_does_not_read_or_publish() {
+        let received = Mutex::new(None);
+        receive_pixel_capacity(&AtomicBool::new(false), &received, || {
+            panic!("disarmed callback must not read notification")
+        });
+        assert_eq!(*received.lock().unwrap(), None);
+    }
+    #[test]
+    fn unrelated_notification_is_ignored_and_first_result_is_preserved() {
+        let armed = AtomicBool::new(true);
+        let received = Mutex::new(None);
+        receive_pixel_capacity(&armed, &received, || Ok(None));
+        assert_eq!(*received.lock().unwrap(), None);
+        receive_pixel_capacity(&armed, &received, || Ok(Some(153)));
+        receive_pixel_capacity(&armed, &received, || Err("later read failure".into()));
+        receive_pixel_capacity(&armed, &received, || Ok(Some(256)));
+        assert_eq!(*received.lock().unwrap(), Some(Ok(153)));
+
+        let received = Mutex::new(None);
+        receive_pixel_capacity(&armed, &received, || Err("first read failure".into()));
+        receive_pixel_capacity(&armed, &received, || Ok(Some(153)));
+        assert_eq!(
+            *received.lock().unwrap(),
+            Some(Err("first read failure".into()))
+        );
+    }
     struct Clock {
         time: Duration,
         cancel: bool,
