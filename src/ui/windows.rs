@@ -389,7 +389,10 @@ fn project(o: &Options) -> Result<(Project, Option<Document>), String> {
         door: vec![],
     };
     for d in &setup.devices {
-        if d.driver == crate::devices::Driver::DoorBle {
+        if matches!(
+            d.driver,
+            crate::devices::Driver::DoorBle | crate::devices::Driver::SurplifeE1Pixels
+        ) {
             groups.door.push(d.id.clone());
         } else {
             groups.pc.push(d.id.clone());

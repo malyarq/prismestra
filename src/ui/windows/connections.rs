@@ -80,6 +80,8 @@ pub(super) struct Editor {
     inventory: Option<discovery::Inventory>,
     scan_endpoint: Option<String>,
     controllers: BTreeMap<String, crate::transport::openrgb::ControllerInfo>,
+    wled_controllers: BTreeMap<String, crate::transport::wled_info::Info>,
+    surplife_points: BTreeMap<String, (u64, usize)>,
     edited: bool,
     removed: bool,
     syncing: bool,
@@ -101,6 +103,8 @@ impl Editor {
             inventory: None,
             scan_endpoint: None,
             controllers: BTreeMap::new(),
+            wled_controllers: BTreeMap::new(),
+            surplife_points: BTreeMap::new(),
             edited: false,
             removed: false,
             syncing: false,
@@ -132,10 +136,13 @@ impl Editor {
     }
     fn scannable(&self) -> bool {
         matches!(self.current(), Some(BindingTarget::Monitor(_)))
-            || matches!(self.current(),Some(BindingTarget::Device(d)) if matches!(d.driver,crate::devices::Driver::HomeAssistant|crate::devices::Driver::OpenRgb|crate::devices::Driver::Fusion2{..}|crate::devices::Driver::Valkyrie{..}|crate::devices::Driver::TtLcd|crate::devices::Driver::SkydimoSerial{..}))
+            || matches!(self.current(),Some(BindingTarget::Device(d)) if matches!(d.driver,crate::devices::Driver::HomeAssistant|crate::devices::Driver::OpenRgb|crate::devices::Driver::WledDdp|crate::devices::Driver::SurplifeE1Pixels|crate::devices::Driver::Fusion2{..}|crate::devices::Driver::Valkyrie{..}|crate::devices::Driver::TtLcd|crate::devices::Driver::SkydimoSerial{..}))
     }
     fn home_assistant(&self) -> bool {
         matches!(self.current(),Some(BindingTarget::Device(d)) if d.driver==crate::devices::Driver::HomeAssistant)
+    }
+    fn wled(&self) -> bool {
+        matches!(self.current(),Some(BindingTarget::Device(d)) if d.driver==crate::devices::Driver::WledDdp)
     }
     fn key(&self, id: &str) -> Result<String, String> {
         match self.activation.as_ref().map(|a| a.native) {
@@ -380,7 +387,11 @@ impl App {
             if self.connections.home_assistant() {
                 "Новый ключ (пусто = сохранённый)"
             } else {
-                "ID контроллера (HEX)"
+                if self.connections.wled() {
+                    "HTTP WLED (пусто = порт 80)"
+                } else {
+                    "ID контроллера (HEX)"
+                }
             },
         );
         self.set_text(ENDPOINT, &draft.endpoint);
@@ -406,7 +417,9 @@ impl App {
                 crate::devices::Driver::HomeAssistant => "Адрес Home Assistant (http://IP:8123)",
                 crate::devices::Driver::OpenRgb => "SDK-сервер OpenRGB (127.0.0.1:6742)",
                 crate::devices::Driver::WledDdp => "IP:порт WLED DDP (обычно 4048)",
-                crate::devices::Driver::DoorBle => "MAC Bluetooth-контроллера",
+                crate::devices::Driver::DoorBle | crate::devices::Driver::SurplifeE1Pixels => {
+                    "MAC Bluetooth-контроллера"
+                }
                 crate::devices::Driver::EneDram => "Проверенный модуль PawnIO",
                 crate::devices::Driver::SkydimoSerial { .. } => "COM-порт контроллера",
                 _ => "Путь интерфейса HID",
@@ -454,15 +467,15 @@ impl App {
             let hint = match self.connections.current() {
                 Some(BindingTarget::Device(d)) => match d.driver {
                     crate::devices::Driver::HomeAssistant => {
-                        "Сохраните ключ в Windows, найдите светильник. Вывод до 1 Гц; HTTP-ответ не подтверждает свечение."
+                        "Пустой адрес: найти сервер в сети. Затем сохраните ключ и найдите светильник. Вывод до 1 Гц."
                     }
                     crate::devices::Driver::OpenRgb => {
                         "Поиск читает SDK; «Применить» включает Direct."
                     }
                     crate::devices::Driver::WledDdp => {
-                        "IP:4048 и число LED из WLED. UDP не подтверждает свечение."
+                        "Пустой адрес: найти WLED в сети. Можно указать IP:4048 вручную. Поиск читает число LED и идентичность."
                     }
-                    crate::devices::Driver::DoorBle => {
+                    crate::devices::Driver::DoorBle | crate::devices::Driver::SurplifeE1Pixels => {
                         "Укажите MAC-адрес ленты. Автоматический поиск для этого протокола не поддерживается."
                     }
                     crate::devices::Driver::EneDram => {
@@ -668,7 +681,7 @@ impl App {
                     .factory
                     .clone()
                     .ok_or("Аппаратный поиск в этом снимке отключён.")?;
-                if self.connections.home_assistant() {
+                if self.connections.home_assistant() && !self.text(ENDPOINT).trim().is_empty() {
                     if !self.text(SERIAL).is_empty() {
                         return Err("Сначала сохраните новый ключ.".into());
                     }
@@ -676,7 +689,7 @@ impl App {
                         crate::devices::home_assistant::credential_id(self.text(ENDPOINT).trim())?;
                     self.connections.key(&key)?;
                 }
-                let network = matches!(&target,BindingTarget::Device(d) if matches!(d.driver,crate::devices::Driver::OpenRgb|crate::devices::Driver::HomeAssistant));
+                let network = matches!(&target,BindingTarget::Device(d) if matches!(d.driver,crate::devices::Driver::OpenRgb|crate::devices::Driver::HomeAssistant|crate::devices::Driver::WledDdp|crate::devices::Driver::SurplifeE1Pixels));
                 let factory = if network
                     && self
                         .connections
@@ -685,7 +698,27 @@ impl App {
                         .is_some_and(|a| a.native)
                 {
                     let endpoint = self.text(ENDPOINT);
-                    if self.connections.home_assistant() {
+                    if matches!(&target, BindingTarget::Device(d) if d.driver == crate::devices::Driver::SurplifeE1Pixels)
+                    {
+                        let binding = Draft {
+                            endpoint: endpoint.clone(),
+                            ..Default::default()
+                        }
+                        .binding(match &target {
+                            BindingTarget::Device(d) => d,
+                            _ => unreachable!(),
+                        })?;
+                        let crate::devices::Binding::Ble { address } = binding else {
+                            unreachable!()
+                        };
+                        self.connections.scan_endpoint = Some(endpoint);
+                        discovery::surplife_factory(address)
+                    } else if endpoint.trim().is_empty()
+                        && (self.connections.home_assistant() || self.connections.wled())
+                    {
+                        self.connections.scan_endpoint = Some(endpoint);
+                        discovery::network_factory()
+                    } else if self.connections.home_assistant() {
                         if !self.text(SERIAL).is_empty() {
                             return Err("Сначала сохраните новый ключ.".into());
                         }
@@ -693,6 +726,20 @@ impl App {
                         let token = self.connections.key(&key)?;
                         self.connections.scan_endpoint = Some(endpoint.clone());
                         discovery::home_assistant_factory(endpoint, token)?
+                    } else if self.connections.wled() {
+                        let endpoint: std::net::SocketAddr = endpoint
+                            .trim()
+                            .parse()
+                            .map_err(|_| "Введите IP:порт DDP, например 192.168.1.20:4048")?;
+                        let endpoint = crate::devices::canonical_endpoint(endpoint);
+                        let http = self.text(SERIAL);
+                        let http = if http.trim().is_empty() {
+                            format!("http://{}", std::net::SocketAddr::new(endpoint.ip(), 80))
+                        } else {
+                            http.trim().to_owned()
+                        };
+                        self.connections.scan_endpoint = Some(self.text(ENDPOINT));
+                        discovery::wled_factory(endpoint, http)
                     } else {
                         let endpoint = if endpoint.trim().is_empty() {
                             "127.0.0.1:6742"
@@ -745,6 +792,27 @@ impl App {
                     self.connections
                         .controllers
                         .insert(device.id, controller.clone());
+                }
+                if let Some(info) = &draft.wled
+                    && let Some(BindingTarget::Device(device)) = self.connections.current().cloned()
+                {
+                    self.connections
+                        .wled_controllers
+                        .insert(device.id, info.clone());
+                }
+                if let Some(BindingTarget::Device(device)) = self.connections.current().cloned()
+                    && device.driver == crate::devices::Driver::SurplifeE1Pixels
+                {
+                    let address = u64::from_str_radix(&draft.draft.endpoint, 16)
+                        .map_err(|_| "Invalid Surplife address")?;
+                    let points = draft
+                        .draft
+                        .serial
+                        .parse()
+                        .map_err(|_| "Invalid Surplife point count")?;
+                    self.connections
+                        .surplife_points
+                        .insert(device.id, (address, points));
                 }
                 let draft = draft.draft;
                 self.connections.syncing = true;
@@ -903,6 +971,21 @@ impl App {
                 {
                     document = crate::app::device_setup::adopt_openrgb(&document, id, controller)?;
                 }
+                if let crate::devices::Binding::WledDdp {
+                    controller: Some(controller),
+                    ..
+                } = binding
+                    && let Some(info) = self.connections.wled_controllers.get(id)
+                    && info.stable_id() == controller.identity
+                {
+                    document = crate::app::device_setup::adopt_wled(&document, id, info)?;
+                }
+                if let crate::devices::Binding::Ble { address } = binding
+                    && let Some((known, points)) = self.connections.surplife_points.get(id)
+                    && known == address
+                {
+                    document = crate::app::device_setup::adopt_surplife(&document, id, *points)?;
+                }
             }
             local.validate(&document)?;
             let plan = (activation.factory)(&local, &document, &self.asset_root)?;
@@ -960,6 +1043,15 @@ impl App {
                 self.status =
                     "Подключения выбраны; ожидаю открытия устройств. Файл привязок не изменён."
                         .into();
+                if self.native_lighting.is_some()
+                    && let Err(error) = self.runtime.with(|runtime, _| {
+                        runtime.enable_registered_output_recovery();
+                        Ok(())
+                    })
+                {
+                    self.status =
+                        format!("Подключения выбраны, восстановление не включено: {error}");
+                }
                 unsafe {
                     SetWindowTextW(
                         GetParent(self.h(PC_ON)),
@@ -1072,6 +1164,7 @@ pub(super) fn stand_factory() -> discovery::Factory {
         if matches!(&target,BindingTarget::Device(d) if d.driver==crate::devices::Driver::OpenRgb) {
             let controller = stand::openrgb_controller();
             inventory.candidates.push(discovery::Candidate {
+                wled: None,
                 controller: Some(controller.clone()),
                 label: "Программный OpenRGB · 3 LED · не оборудование".into(),
                 draft: Draft {
@@ -1108,6 +1201,7 @@ pub(super) fn stand_factory() -> discovery::Factory {
         };
         if let Some(draft) = draft {
             inventory.candidates.push(discovery::Candidate {
+                wled: None,
                 controller: None,
                 label: "Программный пример · не обнаруженное оборудование".into(),
                 draft,

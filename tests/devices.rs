@@ -95,6 +95,23 @@ fn door_pixel_preset_is_explicit_and_preserves_legacy_profiles() {
     invalid.role = Role::Ambient;
     assert!(invalid.validate().is_err());
 }
+#[test]
+fn surplife_family_count_is_explicit_and_separate_from_legacy() {
+    let preset = pc_control::app::device_setup::preset("surplife-e1").unwrap();
+    for count in [1, 20, 152, 153, 256, 4096] {
+        let device = preset.device_with_leds("strip", count).unwrap();
+        assert_eq!(device.driver, Driver::SurplifeE1Pixels);
+        assert_eq!(device.leds, count);
+        assert_eq!(device.rate_hz, 10);
+        assert!(!device.enabled);
+        device.validate().unwrap();
+    }
+    for count in [0, 4097] {
+        assert!(preset.device_with_leds("strip", count).is_err());
+    }
+    let old: Driver = serde_json::from_str(r#"{"type":"door_ble"}"#).unwrap();
+    assert_eq!(old, Driver::DoorBle);
+}
 fn bindings() -> Bindings {
     BTreeMap::from([
         (

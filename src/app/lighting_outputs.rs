@@ -131,7 +131,9 @@ impl Local {
             native_rgb,
             native_lcd,
             native_capture,
-        )
+        )?;
+        runtime.enable_registered_output_recovery();
+        Ok(())
     }
 }
 

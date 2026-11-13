@@ -119,6 +119,14 @@ pub struct Host {
     autonomous: bool,
 }
 impl Host {
+    pub(crate) fn output_reaped(&self, id: &str) -> bool {
+        self.core
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .outputs
+            .get(id)
+            .is_some_and(|o| o.is_reaped())
+    }
     pub fn new(setup: Setup, scene: Scene) -> Result<Self, String> {
         let core = Core::new(setup, scene.clone())?;
         Ok(Self {

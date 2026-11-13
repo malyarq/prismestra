@@ -179,6 +179,7 @@ impl<L: serial::Link> RgbDriver for Serial<L> {
 }
 pub struct Ble<L: ble::Link> {
     link: L,
+    protocol: Driver,
     target: u64,
     brightness: i32,
     sequence: u8,
@@ -198,6 +199,36 @@ impl<L: ble::Link> Ble<L> {
         }
         Ok(Self {
             link,
+            protocol: Driver::DoorBle,
+            target,
+            brightness,
+            sequence: 0,
+            leds,
+        })
+    }
+    pub fn with_e1(
+        mut link: L,
+        target: u64,
+        brightness: i32,
+        leds: usize,
+        cancel: &Cancellation,
+    ) -> Result<Self, String> {
+        if !door::allowed(target)
+            || link.address()? != target
+            || !(1..=100).contains(&brightness)
+            || !(1..=door::MAX_PIXEL_POINTS).contains(&leds)
+        {
+            return Err("Invalid Surplife E1 binding/capacity".into());
+        }
+        let actual = link.pixel_capacity(&mut Control::new(cancel.clone()))?;
+        if actual != leds {
+            return Err(format!(
+                "Surplife reports {actual} points; update the device geometry before Apply"
+            ));
+        }
+        Ok(Self {
+            link,
+            protocol: Driver::SurplifeE1Pixels,
             target,
             brightness,
             sequence: 0,
@@ -207,7 +238,7 @@ impl<L: ble::Link> Ble<L> {
 }
 impl<L: ble::Link> RgbDriver for Ble<L> {
     fn protocol(&self) -> Driver {
-        Driver::DoorBle
+        self.protocol.clone()
     }
     fn leds(&self) -> usize {
         self.leds
@@ -221,6 +252,16 @@ impl<L: ble::Link> RgbDriver for Ble<L> {
         }
         if colors.len() != self.leds {
             return Err("Door frame does not match its configured LED count".into());
+        }
+        if self.protocol == Driver::SurplifeE1Pixels {
+            self.link.write_e1_pixels(
+                colors,
+                self.brightness,
+                self.sequence,
+                &mut Control::new(cancel.clone()),
+            )?;
+            self.sequence = self.sequence.wrapping_add(1);
+            return Ok(WriteResult::Submitted);
         }
         if self.leds == door::PIXEL_LEDS {
             self.link.write_pixels(
@@ -254,12 +295,30 @@ mod ble_tests {
 
     #[derive(Default)]
     struct Record {
+        capacity: usize,
         legacy: usize,
         pixels: Vec<u8>,
         fail: bool,
     }
     struct Link(Arc<Mutex<Record>>);
     impl ble::Link for Link {
+        fn pixel_capacity(&mut self, _: &mut dyn ble::Control) -> Result<usize, String> {
+            Ok(self.0.lock().unwrap().capacity)
+        }
+        fn write_e1_pixels(
+            &mut self,
+            colors: &[Rgb],
+            _: i32,
+            sequence: u8,
+            _: &mut dyn ble::Control,
+        ) -> Result<(), String> {
+            let mut state = self.0.lock().unwrap();
+            if colors.len() != state.capacity {
+                return Err("Capacity changed".into());
+            }
+            state.pixels.push(sequence);
+            Ok(())
+        }
         fn address(&self) -> Result<u64, String> {
             Ok(1)
         }
@@ -316,5 +375,20 @@ mod ble_tests {
             .unwrap();
         assert_eq!(state.lock().unwrap().legacy, 1);
         assert!(Ble::with_leds(Link(state), 1, 100, 152).is_err());
+    }
+    #[test]
+    fn e1_requires_reported_capacity_before_any_output() {
+        let state = Arc::new(Mutex::new(Record {
+            capacity: 152,
+            ..Default::default()
+        }));
+        let cancel = Cancellation::default();
+        assert!(Ble::with_e1(Link(state.clone()), 1, 60, 153, &cancel).is_err());
+        assert!(state.lock().unwrap().pixels.is_empty());
+        let mut driver = Ble::with_e1(Link(state.clone()), 1, 60, 152, &cancel).unwrap();
+        assert_eq!(driver.protocol(), Driver::SurplifeE1Pixels);
+        assert!(driver.write(&vec![Rgb::default(); 153], &cancel).is_err());
+        driver.write(&vec![Rgb::default(); 152], &cancel).unwrap();
+        assert_eq!(state.lock().unwrap().pixels, vec![0]);
     }
 }

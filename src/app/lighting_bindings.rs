@@ -34,9 +34,19 @@ impl Draft {
                 identity: identity.clone(),
                 serial: topology.clone(),
             },
-            Binding::WledDdp { endpoint } => Self {
+            Binding::WledDdp {
+                endpoint,
+                controller,
+            } => Self {
                 endpoint: endpoint.to_string(),
-                ..Self::default()
+                identity: controller
+                    .as_ref()
+                    .map(|c| c.identity.clone())
+                    .unwrap_or_default(),
+                serial: controller
+                    .as_ref()
+                    .map(|c| c.http_endpoint.clone())
+                    .unwrap_or_default(),
             },
             Binding::Ble { address } => Self {
                 endpoint: format!("{address:012X}"),
@@ -91,13 +101,21 @@ impl Draft {
                 topology: self.serial.trim().into(),
             },
             Driver::WledDdp => Binding::WledDdp {
+                controller: if self.identity.trim().is_empty() && self.serial.trim().is_empty() {
+                    None
+                } else {
+                    Some(crate::devices::wled::Controller {
+                        http_endpoint: self.serial.trim().into(),
+                        identity: self.identity.trim().into(),
+                    })
+                },
                 endpoint: crate::devices::canonical_endpoint(
                     endpoint
                         .parse()
                         .map_err(|_| "Введите IP:порт DDP, например 192.168.1.20:4048")?,
                 ),
             },
-            Driver::DoorBle => {
+            Driver::DoorBle | Driver::SurplifeE1Pixels => {
                 let mac = endpoint.replace([':', '-'], "");
                 if mac.len() != 12 || !mac.bytes().all(|c| c.is_ascii_hexdigit()) {
                     return Err("MAC должен содержать 12 шестнадцатеричных цифр.".into());

@@ -15,6 +15,7 @@ use std::{
 
 pub mod home_assistant;
 pub mod openrgb;
+pub mod wled;
 
 pub const MAX_JSON_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_DEVICES: usize = 256;
@@ -34,6 +35,7 @@ pub enum Role {
 pub enum Driver {
     SkydimoSerial { model: String },
     DoorBle,
+    SurplifeE1Pixels,
     WledDdp,
     OpenRgb,
     HomeAssistant,
@@ -145,6 +147,14 @@ impl Device {
                     || ![door::COLOR_GROUPS, door::PIXEL_LEDS].contains(&self.leds) =>
             {
                 return Err("Door BLE requires 20 legacy groups or 153 E1 preview pixels".into());
+            }
+            Driver::SurplifeE1Pixels
+                if self.role != Role::Canvas
+                    || !(1..=door::MAX_PIXEL_POINTS).contains(&self.leds) =>
+            {
+                return Err(
+                    "Surplife E1 requires a confirmed controller capacity in 1..=4096".into(),
+                );
             }
             Driver::TtLcd if self.role != Role::Lcd || self.leds != 0 => {
                 return Err("TT LCD requires LCD role and zero RGB LEDs".into());
@@ -275,6 +285,8 @@ pub enum Binding {
     },
     WledDdp {
         endpoint: std::net::SocketAddr,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        controller: Option<wled::Controller>,
     },
     Serial {
         port: String,
@@ -317,7 +329,16 @@ impl Binding {
             // Until the SDK exposes a verified server namespace, identical
             // physical metadata across server addresses is conservatively one owner.
             Self::OpenRgb { identity, .. } => vec![format!("openrgb:{identity}")],
-            Self::WledDdp { endpoint } => vec![format!("wled:{}", canonical_endpoint(*endpoint))],
+            Self::WledDdp {
+                endpoint,
+                controller,
+            } => {
+                let mut keys = vec![format!("wled:{}", canonical_endpoint(*endpoint))];
+                if let Some(controller) = controller {
+                    keys.push(controller.identity.clone());
+                }
+                keys
+            }
             Self::Serial {
                 port, instance_id, ..
             } => vec![
@@ -371,7 +392,16 @@ impl Binding {
                 Ok(())
             }
 
-            (Self::WledDdp { endpoint }, Driver::WledDdp) => {
+            (
+                Self::WledDdp {
+                    endpoint,
+                    controller,
+                },
+                Driver::WledDdp,
+            ) => {
+                if let Some(controller) = controller {
+                    controller.validate_target(*endpoint)?;
+                }
                 let ip = endpoint.ip().to_canonical();
                 if endpoint.port() == 0
                     || ip.is_unspecified()
@@ -402,7 +432,11 @@ impl Binding {
                 leds: device.leds,
             }
             .validate(),
-            (Self::Ble { address }, Driver::DoorBle) if door::allowed(*address) => Ok(()),
+            (Self::Ble { address }, Driver::DoorBle | Driver::SurplifeE1Pixels)
+                if door::allowed(*address) =>
+            {
+                Ok(())
+            }
             (Self::Hid { path }, Driver::TtLcd) if path.len() <= 4096 => {
                 hid_policy::validate_path(hid_policy::Kind::Display, path)
             }

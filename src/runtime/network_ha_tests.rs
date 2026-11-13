@@ -63,7 +63,10 @@ fn start_peer(
 #[test]
 fn ha_deduplicates_limits_rate_and_posts_off_only_when_due() {
     let (url, peer) = start_peer(vec![
-        ("200 OK", r#"{"entity_id":"light.room"}"#),
+        (
+            "200 OK",
+            r#"{"entity_id":"light.room","state":"on","attributes":{"supported_color_modes":["rgb"]}}"#,
+        ),
         ("200 OK", "[]"),
         ("200 OK", "[]"),
     ]);
@@ -113,7 +116,7 @@ fn ha_discovery_is_read_only_and_errors_do_not_expose_credentials() {
     use crate::app::lighting_bindings::discovery::{self, Target};
     let (url, peer) = start_peer(vec![(
         "200 OK",
-        r#"[{"entity_id":"light.room","attributes":{"friendly_name":"Room","supported_color_modes":["rgb"]}},{"entity_id":"sensor.temp"}]"#,
+        r#"[{"entity_id":"light.room","state":"on","attributes":{"friendly_name":"Room","supported_color_modes":["rgb"]}},{"entity_id":"light.absent","state":"unavailable","attributes":{"supported_color_modes":["rgb"]}},{"entity_id":"light.unknown","state":"off","attributes":{"supported_color_modes":["unknown"]}},{"entity_id":"sensor.temp"}]"#,
     )]);
     let d = crate::devices::Device {
         id: "ha".into(),
@@ -127,6 +130,7 @@ fn ha_discovery_is_read_only_and_errors_do_not_expose_credentials() {
     let factory = discovery::home_assistant_factory(url.clone(), "fake.test-token".into()).unwrap();
     let inventory = factory(Target::Device(d), Cancellation::default()).unwrap();
     assert_eq!(inventory.candidates.len(), 1);
+    assert_eq!(inventory.issues.len(), 2);
     let draft = &inventory.candidates[0].draft;
     assert_eq!(draft.identity, "light.room");
     assert_eq!(

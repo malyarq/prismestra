@@ -209,7 +209,9 @@ fn fixed_led_count(preset: &crate::app::device_setup::Preset) -> Option<usize> {
     // A variable model requiring an explicit count has no default device.
     let device = preset.device("new-device").ok()?;
     match &device.driver {
-        crate::devices::Driver::OpenRgb | crate::devices::Driver::WledDdp => None,
+        crate::devices::Driver::OpenRgb
+        | crate::devices::Driver::WledDdp
+        | crate::devices::Driver::SurplifeE1Pixels => None,
         crate::devices::Driver::SkydimoSerial { model }
             if crate::transport::skydimo::model(model).is_some_and(|model| model.resizable) =>
         {

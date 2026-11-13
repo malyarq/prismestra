@@ -9,6 +9,65 @@ use std::time::{Duration, Instant};
 
 pub const POLL: Duration = Duration::from_millis(25);
 pub const TIMEOUT: Duration = Duration::from_secs(8);
+/// Read-only status query used by the captured Surplife probe (EA81).
+pub(crate) const PIXEL_CAPACITY_QUERY: [u8; 12] =
+    [0, 0x7e, 0x80, 0, 0, 4, 5, 0x0a, 0xea, 0x81, 0x8a, 0x8b];
+
+/// FF02 envelope/offsets from probe_pixels.py::status and preview-result.json.
+/// Only the observed product/protocol and single-segment layout are accepted.
+pub(crate) fn parse_pixel_capacity(packet: &[u8]) -> Result<Option<usize>, String> {
+    if packet.len() > 4096 {
+        return Err("EA81 notification exceeds host limit".into());
+    }
+    let Some(start) = packet.iter().position(|byte| *byte == b'{') else {
+        return Ok(None);
+    };
+    let json: serde_json::Value =
+        serde_json::from_slice(&packet[start..]).map_err(|_| "Malformed EA81 notification JSON")?;
+    let hex = json
+        .get("payload")
+        .and_then(|v| v.as_str())
+        .ok_or("EA81 notification has no hex payload")?;
+    if !hex.len().is_multiple_of(2) || !hex.is_ascii() {
+        return Err("Malformed EA81 hex payload".into());
+    }
+    let raw = (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "Malformed EA81 hex payload")?;
+    if !raw.starts_with(&[0xea, 0x81]) {
+        return Ok(None);
+    }
+    if raw.len() < 19 {
+        return Err("Truncated EA81 status".into());
+    }
+    if raw[4] != 170 || raw[5] != 11 {
+        return Err("Unsupported Surplife product or LED protocol version".into());
+    }
+    if raw[16] != 1 {
+        return Err("Surplife pixel output requires exactly one segment".into());
+    }
+    let points = u16::from_be_bytes([raw[17], raw[18]]) as usize;
+    if !(1..=door::MAX_PIXEL_POINTS).contains(&points) {
+        return Err("Surplife point count exceeds host bounds".into());
+    }
+    Ok(Some(points))
+}
+
+pub(crate) fn wait_pixel_capacity(
+    control: &mut dyn Control,
+    started: Duration,
+    read: &mut impl FnMut() -> Option<Result<usize, String>>,
+) -> Result<usize, String> {
+    loop {
+        check_wait(control, started)?;
+        if let Some(result) = read() {
+            return result;
+        }
+        control.sleep(POLL);
+    }
+}
 /// Only the audited door protocol commands may cross either transport boundary.
 pub fn valid_packet(packet: &[u8]) -> bool {
     match packet.len() {
@@ -107,6 +166,21 @@ pub trait Link {
     fn connected(&self) -> Result<bool, String>;
     fn max_pdu(&self) -> Result<u32, String>;
     fn write(&mut self, packet: &[u8], control: &mut dyn Control) -> Result<(), String>;
+    fn pixel_capacity(&mut self, _control: &mut dyn Control) -> Result<usize, String> {
+        Err("BLE link does not support current pixel capability queries".into())
+    }
+    fn write_e1_pixels(
+        &mut self,
+        colors: &[Rgb],
+        brightness: i32,
+        sequence: u8,
+        control: &mut dyn Control,
+    ) -> Result<(), String> {
+        if colors.len() != door::PIXEL_LEDS {
+            return Err("BLE link does not support variable pixel frames".into());
+        }
+        self.write_pixels(colors, brightness, sequence, control)
+    }
     fn write_pixels(
         &mut self,
         _colors: &[Rgb],
@@ -118,9 +192,9 @@ pub trait Link {
     }
 }
 /// Propagate the whole-frame budget into each asynchronous GATT wait.
-struct FrameControl<'a> {
-    inner: &'a mut dyn Control,
-    started: Duration,
+pub(crate) struct FrameControl<'a> {
+    pub(crate) inner: &'a mut dyn Control,
+    pub(crate) started: Duration,
 }
 impl Control for FrameControl<'_> {
     fn now(&self) -> Duration {
@@ -145,9 +219,23 @@ pub(crate) fn write_pixel_frame(
     control: &mut dyn Control,
     submit: &mut impl FnMut(&[u8], &mut dyn Control) -> Result<(), String>,
 ) -> Result<(), String> {
+    if colors.len() != door::PIXEL_LEDS {
+        return Err("pixel frame requires 153 colors".into());
+    }
+    write_e1_pixel_frame(colors, brightness, sequence, pdu, control, submit)
+}
+
+pub(crate) fn write_e1_pixel_frame(
+    colors: &[Rgb],
+    brightness: i32,
+    sequence: u8,
+    pdu: u32,
+    control: &mut dyn Control,
+    submit: &mut impl FnMut(&[u8], &mut dyn Control) -> Result<(), String>,
+) -> Result<(), String> {
     let started = control.now();
-    let packets =
-        door::pixel_fragments(colors, brightness, sequence, pdu).map_err(str::to_owned)?;
+    let packets = door::pixel_fragments_for_points(colors, brightness, sequence, pdu, colors.len())
+        .map_err(str::to_owned)?;
     let mut frame = FrameControl {
         inner: control,
         started,
@@ -362,6 +450,136 @@ impl Control for WorkerControl<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn status_packet(raw: &[u8]) -> Vec<u8> {
+        let hex: String = raw.iter().map(|byte| format!("{byte:02x}")).collect();
+        format!("prefix{{\"payload\":\"{hex}\"}}").into_bytes()
+    }
+    fn status_fixture() -> Vec<u8> {
+        // preview-result.json, before.payload_hex; captured single-segment153 controller.
+        let hex = "ea810100aa0b23240150f00064030000010099ffffffff01000001";
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect()
+    }
+    #[test]
+    fn capacity_parser_accepts_observed_fixture_and_bounded_be16_counts() {
+        let mut raw = status_fixture();
+        assert_eq!(
+            parse_pixel_capacity(&status_packet(&raw)).unwrap(),
+            Some(153)
+        );
+        for points in [1u16, 20, 152, 153, 256, door::MAX_PIXEL_POINTS as u16] {
+            raw[17..19].copy_from_slice(&points.to_be_bytes());
+            assert_eq!(
+                parse_pixel_capacity(&status_packet(&raw)).unwrap(),
+                Some(points as usize)
+            );
+        }
+        assert_eq!(
+            PIXEL_CAPACITY_QUERY,
+            [0, 126, 128, 0, 0, 4, 5, 10, 234, 129, 138, 139]
+        );
+        assert!(!valid_packet(&PIXEL_CAPACITY_QUERY));
+    }
+    #[test]
+    fn capacity_parser_rejects_unknown_geometry_protocol_and_malformed_envelopes() {
+        let fixture = status_fixture();
+        for length in 2..19 {
+            assert!(parse_pixel_capacity(&status_packet(&fixture[..length])).is_err());
+        }
+        for (index, value) in [(4, 169), (5, 10), (16, 0), (16, 2)] {
+            let mut raw = fixture.clone();
+            raw[index] = value;
+            assert!(parse_pixel_capacity(&status_packet(&raw)).is_err());
+        }
+        for points in [0u16, door::MAX_PIXEL_POINTS as u16 + 1, u16::MAX] {
+            let mut raw = fixture.clone();
+            raw[17..19].copy_from_slice(&points.to_be_bytes());
+            assert!(parse_pixel_capacity(&status_packet(&raw)).is_err());
+        }
+        for packet in [
+            b"{".as_slice(),
+            b"{}",
+            b"{\"payload\":3}",
+            b"{\"payload\":\"ea8\"}",
+            b"{\"payload\":\"zz\"}",
+        ] {
+            assert!(parse_pixel_capacity(packet).is_err());
+        }
+        assert!(parse_pixel_capacity(&vec![0; 4097]).is_err());
+        assert_eq!(parse_pixel_capacity(b"unrelated").unwrap(), None);
+        assert_eq!(
+            parse_pixel_capacity(&status_packet(&[0xe1, 3])).unwrap(),
+            None
+        );
+    }
+    #[test]
+    fn capacity_wait_checks_total_deadline_and_cancellation_before_accepting_status() {
+        for cancel_at in [POLL, TIMEOUT] {
+            let mut clock = Clock {
+                time: Duration::ZERO,
+                cancel_at,
+            };
+            assert!(wait_pixel_capacity(&mut clock, Duration::ZERO, &mut || None).is_err());
+            assert_eq!(clock.time, cancel_at);
+        }
+        let mut clock = Clock {
+            time: TIMEOUT,
+            cancel_at: Duration::MAX,
+        };
+        let mut reads = 0;
+        assert!(
+            wait_pixel_capacity(&mut clock, Duration::ZERO, &mut || {
+                reads += 1;
+                Some(Ok(153))
+            })
+            .is_err()
+        );
+        assert_eq!(reads, 0);
+        clock.time = TIMEOUT - POLL;
+        assert_eq!(
+            wait_pixel_capacity(&mut clock, Duration::ZERO, &mut || Some(Ok(153))).unwrap(),
+            153
+        );
+        assert!(
+            wait_pixel_capacity(&mut clock, Duration::ZERO, &mut || Some(Err(
+                "bad status".into()
+            )))
+            .is_err()
+        );
+    }
+    #[test]
+    fn variable_pixel_transport_prepares_bounded_frames_and_propagates_deadline() {
+        let colors = vec![Rgb::new(0, 255, 0); 256];
+        let mut clock = Clock {
+            time: Duration::ZERO,
+            cancel_at: Duration::MAX,
+        };
+        let mut packets = Vec::new();
+        write_e1_pixel_frame(&colors, 15, 7, 200, &mut clock, &mut |packet, _| {
+            packets.push(packet.to_vec());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            packets,
+            door::pixel_fragments_for_points(&colors, 15, 7, 200, 256).unwrap()
+        );
+        let mut writes = 0;
+        assert!(
+            write_e1_pixel_frame(&colors, 15, 7, 200, &mut clock, &mut |_, control| {
+                writes += 1;
+                while !control.cancelled() {
+                    control.sleep(POLL);
+                }
+                Err("deadline".into())
+            })
+            .is_err()
+        );
+        assert_eq!(writes, 1);
+        assert_eq!(clock.time, TIMEOUT);
+    }
     struct Clock {
         time: Duration,
         cancel_at: Duration,

@@ -1,4 +1,4 @@
-//! One explicit metadata scan. No RGB reports, serial queries, BLE connects or bus scans.
+//! Explicit discovery: metadata only; selected Surplife capacity uses a bounded BLE query.
 use super::Draft;
 use crate::{
     devices::{Device, Driver},
@@ -12,6 +12,7 @@ pub enum Target {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
+    pub wled: Option<crate::transport::wled_info::Info>,
     pub controller: Option<crate::transport::openrgb::ControllerInfo>,
     pub label: String,
     pub draft: Draft,
@@ -40,6 +41,13 @@ impl Inventory {
         }
         let mut keys = std::collections::BTreeSet::new();
         for c in &self.candidates {
+            if let Some(info) = &c.wled
+                && (!matches!(target, Target::Device(d) if d.driver == Driver::WledDdp)
+                    || c.draft.identity != info.stable_id()
+                    || info.led_count == 0)
+            {
+                return Err("WLED candidate metadata does not match its binding".into());
+            }
             if let Some(controller) = &c.controller {
                 if !matches!(target,Target::Device(d) if d.driver==Driver::OpenRgb)
                     || crate::devices::openrgb::identity(controller) != c.draft.identity
@@ -64,6 +72,13 @@ impl Inventory {
             }
             match target {
                 Target::Monitor(_) => crate::capture::validate_name(&c.draft.endpoint)?,
+                Target::Device(d)
+                    if d.driver == Driver::HomeAssistant
+                        && c.draft.identity.is_empty()
+                        && c.draft.serial.is_empty() =>
+                {
+                    crate::devices::home_assistant::canonical_endpoint(&c.draft.endpoint)?;
+                }
                 Target::Device(d) if matches!(d.driver, Driver::SkydimoSerial { .. }) => {
                     crate::transport::serial::port_path(&c.draft.endpoint)?;
                     if !crate::transport::serial::valid_usb_id(&c.draft.identity) {
@@ -193,6 +208,19 @@ pub fn home_assistant_factory(endpoint: String, token: String) -> Result<Factory
             if !metadata::valid_entity(&light.entity_id) {
                 continue;
             }
+            let Some(capability) = light.capability() else {
+                inventory.issues.push(format!(
+                    "{}: неизвестные возможности светильника.",
+                    light.entity_id
+                ));
+                continue;
+            };
+            if !matches!(light.state.as_deref(), Some("on" | "off")) {
+                inventory
+                    .issues
+                    .push(format!("{}: светильник недоступен.", light.entity_id));
+                continue;
+            }
             let name = light
                 .name
                 .unwrap_or_else(|| light.entity_id.clone())
@@ -200,14 +228,9 @@ pub fn home_assistant_factory(endpoint: String, token: String) -> Result<Factory
                 .filter(|c| !c.is_control())
                 .take(100)
                 .collect::<String>();
-            let modes = light
-                .supported_color_modes
-                .join(", ")
-                .chars()
-                .filter(|c| !c.is_control())
-                .take(100)
-                .collect::<String>();
+            let modes = capability.label();
             inventory.candidates.push(Candidate {
+                wled: None,
                 controller: None,
                 label: format!("{name} · {} · {modes}", light.entity_id),
                 draft: Draft {
@@ -265,6 +288,7 @@ pub fn openrgb_factory(endpoint: std::net::SocketAddr) -> Factory {
             }
             metadata::positions(&controller)?;
             inventory.candidates.push(Candidate {
+                wled: None,
                 controller: Some(controller.clone()),
                 label: format!("{name} · {} LED · {endpoint}", controller.leds),
                 draft: Draft {
@@ -277,6 +301,157 @@ pub fn openrgb_factory(endpoint: std::net::SocketAddr) -> Factory {
         inventory.issues.truncate(127);
         inventory.issues.push("Выбирайте физический контроллер; общий виртуальный холст вместе с его физическими выходами создаёт конфликт владения.".into());
         inventory.validate(&target)?;
+        Ok(inventory)
+    })
+}
+/// Read-only WLED metadata; DDP and HTTP ports are intentionally separate.
+#[cfg(windows)]
+pub fn wled_factory(endpoint: std::net::SocketAddr, http_endpoint: String) -> Factory {
+    wled_factory_until(endpoint, http_endpoint, None)
+}
+#[cfg(windows)]
+fn wled_factory_until(
+    endpoint: std::net::SocketAddr,
+    http_endpoint: String,
+    until: Option<std::time::Instant>,
+) -> Factory {
+    Arc::new(move |target, cancel| {
+        if !matches!(&target, Target::Device(d) if d.driver == Driver::WledDdp) {
+            return Err("WLED discovery target changed".into());
+        }
+        let info = crate::transport::wled_info::Endpoint::parse(&http_endpoint)
+            .map_err(|e| e.to_string())?
+            .query(
+                until
+                    .unwrap_or_else(|| {
+                        std::time::Instant::now() + std::time::Duration::from_secs(3)
+                    })
+                    .min(std::time::Instant::now() + std::time::Duration::from_secs(3)),
+                || cancel.cancelled(),
+            )
+            .map_err(|e| e.to_string())?;
+        let controller = crate::devices::wled::Controller {
+            http_endpoint: http_endpoint.clone(),
+            identity: info.stable_id(),
+        };
+        controller.validate()?;
+        let name = info.name.as_deref().unwrap_or("WLED");
+        let mut inventory = Inventory::empty(target);
+        inventory.candidates.push(Candidate {
+            controller: None,
+            label: format!("{name} · {} LED · {endpoint}", info.led_count),
+            draft: Draft {
+                endpoint: endpoint.to_string(),
+                identity: controller.identity,
+                serial: controller.http_endpoint,
+            },
+            wled: Some(info),
+        });
+        Ok(inventory)
+    })
+}
+/// A finite LAN browse. HA server selection precedes authentication and light discovery.
+#[cfg(windows)]
+pub fn network_factory() -> Factory {
+    Arc::new(move |target, cancel| {
+        use crate::transport::service_discovery::{self, Kind};
+        let kind = match &target {
+            Target::Device(d) if d.driver == Driver::WledDdp => Kind::Wled,
+            Target::Device(d) if d.driver == Driver::HomeAssistant => Kind::HomeAssistant,
+            _ => return Err("Network discovery target changed".into()),
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        let scan = service_discovery::discover(deadline, || cancel.cancelled())
+            .map_err(|e| e.to_string())?;
+        let mut inventory = Inventory::empty(target.clone());
+        for record in scan.records.into_iter().filter(|r| r.kind == kind).take(16) {
+            if cancel.cancelled() {
+                return Err("Поиск отменён.".into());
+            }
+            if std::time::Instant::now() >= deadline {
+                inventory
+                    .issues
+                    .push("Время поиска истекло; повторите для остальных устройств.".into());
+                break;
+            }
+            if kind == Kind::Wled {
+                let endpoint = std::net::SocketAddr::new(
+                    record.address.ip(),
+                    crate::transport::wled::DEFAULT_PORT,
+                );
+                match wled_factory_until(endpoint, record.http_endpoint, Some(deadline))(
+                    target.clone(),
+                    cancel.clone(),
+                ) {
+                    Ok(found) => {
+                        for candidate in found.candidates {
+                            if !inventory
+                                .candidates
+                                .iter()
+                                .any(|c| c.draft.identity == candidate.draft.identity)
+                            {
+                                inventory.candidates.push(candidate);
+                            }
+                        }
+                    }
+                    Err(_) => inventory.issues.push(format!(
+                        "{}: WLED не подтвердил метаданные; можно указать адрес вручную.",
+                        record.address
+                    )),
+                }
+            } else {
+                inventory.candidates.push(Candidate {
+                    controller: None,
+                    wled: None,
+                    label: format!("Home Assistant · {}", record.address),
+                    draft: Draft {
+                        endpoint: record.http_endpoint,
+                        ..Default::default()
+                    },
+                });
+            }
+        }
+        if scan.truncated {
+            inventory
+                .issues
+                .push("Часть сетевых объявлений не показана.".into());
+        }
+        if kind == Kind::HomeAssistant {
+            inventory.issues.push("Выберите сервер, сохраните ключ и повторите поиск светильников. TLS/прокси может потребовать исправить адрес.".into());
+        }
+        if inventory.candidates.is_empty() {
+            inventory.issues.push("Устройств не найдено. Укажите адрес вручную; mDNS может быть отключён или недоступен между сетями.".into());
+        }
+        Ok(inventory)
+    })
+}
+#[cfg(windows)]
+pub fn surplife_factory(address: u64) -> Factory {
+    Arc::new(move |target, cancel| {
+        use crate::transport::ble::{Backend, Link};
+        if !matches!(&target, Target::Device(d) if d.driver == Driver::SurplifeE1Pixels) {
+            return Err("Surplife discovery target changed".into());
+        }
+        let _lease = crate::runtime::output::Lease::acquire(vec![format!("ble:{address}")])
+            .map_err(|_| "Контроллер уже занят выводом. Отключите его привязку перед проверкой возможностей.")?;
+        let mut control = crate::runtime::adapters::Control::new(cancel);
+        let mut link = crate::transport::ble_windows::WindowsBackend.connect(
+            address,
+            &mut control,
+            &mut |_| {},
+        )?;
+        let points = link.pixel_capacity(&mut control)?;
+        let mut inventory = Inventory::empty(target);
+        inventory.candidates.push(Candidate {
+            controller: None,
+            wled: None,
+            label: format!("Surplife E1 · {points} точек · {address:012X}"),
+            draft: Draft {
+                endpoint: format!("{address:012X}"),
+                serial: points.to_string(),
+                ..Default::default()
+            },
+        });
         Ok(inventory)
     })
 }
@@ -296,6 +471,7 @@ fn native(target: Target, cancel: Cancellation) -> Result<Inventory, String> {
         Target::Monitor(_) => {
             for m in crate::capture::windows::monitors()? {
                 out.candidates.push(Candidate {
+                    wled: None,
                     controller: None,
                     label: format!("{} · {}×{}", m.device_name, m.width, m.height),
                     draft: Draft {
@@ -311,7 +487,7 @@ fn native(target: Target, cancel: Cancellation) -> Result<Inventory, String> {
                 Driver::TtLcd=>{
                     for descriptor in crate::lcd::hid_windows::NativeBackend.candidates(Kind::Display)? {
                         if let Err(e)=crate::lcd::hid_policy::validate(Kind::Display,&descriptor){out.issues.push(e);continue;}
-                        out.candidates.push(Candidate{controller: None,label:format!("TT display MI01 · {}",descriptor.path.chars().take(100).collect::<String>()),draft:Draft{endpoint:descriptor.path,..Default::default()}});
+                        out.candidates.push(Candidate{wled: None,controller: None,label:format!("TT display MI01 · {}",descriptor.path.chars().take(100).collect::<String>()),draft:Draft{endpoint:descriptor.path,..Default::default()}});
                     }
                 }
                 Driver::Fusion2{..} | Driver::Valkyrie{..}=>{
@@ -323,7 +499,7 @@ fn native(target: Target, cancel: Cancellation) -> Result<Inventory, String> {
                     for path in crate::lcd::hid_windows::metadata_paths(|p|!cancel.cancelled() && family.validate_path(p).is_ok())? {
                         if cancel.cancelled(){return Err("Поиск отменён.".into());}
                         match crate::transport::feature_hid_windows::NativeBackend.inspect(family,&path).and_then(|descriptor|{crate::transport::feature_hid::validate(family,&descriptor)?;Ok(descriptor)}) {
-                            Ok(descriptor)=>out.candidates.push(Candidate{controller: None,label:format!("USB HID · {}",descriptor.path.chars().take(100).collect::<String>()),draft:Draft{endpoint:descriptor.path,..Default::default()}}),
+                            Ok(descriptor)=>out.candidates.push(Candidate{wled: None,controller: None,label:format!("USB HID · {}",descriptor.path.chars().take(100).collect::<String>()),draft:Draft{endpoint:descriptor.path,..Default::default()}}),
                             Err(e)=>out.issues.push(e),
                         }
                     }
@@ -331,14 +507,14 @@ fn native(target: Target, cancel: Cancellation) -> Result<Inventory, String> {
                 Driver::SkydimoSerial{..}=>{
                     for descriptor in crate::transport::serial_windows::WindowsBackend.descriptors()? {
                         if !crate::transport::serial::valid_usb_id(&descriptor.instance_id){continue;}
-                        out.candidates.push(Candidate{controller: None,label:format!("{} · CH340, Skydimo ещё не подтверждён",descriptor.port),draft:Draft{endpoint:descriptor.port,identity:descriptor.instance_id,serial:String::new()}});
+                        out.candidates.push(Candidate{wled: None,controller: None,label:format!("{} · CH340, Skydimo ещё не подтверждён",descriptor.port),draft:Draft{endpoint:descriptor.port,identity:descriptor.instance_id,serial:String::new()}});
                     }
                     out.issues.push("Порты не открывались. Модель и HEX ID контроллера требуют отдельной проверки; CH340 не означает Skydimo.".into());
                 }
                 Driver::HomeAssistant=>out.issues.push("Укажите адрес Home Assistant и сохраните ключ, затем найдите светильники.".into()),
                 Driver::OpenRgb=>out.issues.push("Укажите SDK-сервер OpenRGB и выполните отдельный read-only поиск контроллеров.".into()),
                 Driver::WledDdp=>out.issues.push("WLED: укажите известный IP и порт DDP (обычно 4048). Автопоиск не отправляет команды; UDP-передача не подтверждает физический вывод.".into()),
-                Driver::DoorBle=>out.issues.push("Автопоиск BLE пока не реализован. Введите MAC известного совместимого контроллера; подключение не выполняется при сохранении.".into()),
+                Driver::DoorBle | Driver::SurplifeE1Pixels=>out.issues.push("Введите MAC известного совместимого контроллера. Для Surplife E1 перед выводом проверяется модель и число точек; сохранение не включает подсветку.".into()),
                 Driver::EneDram=>out.issues.push("Автопоиск ENE/SMBus не выполняется. Нужны путь проверенного модуля PawnIO и адрес 0x70..0x76.".into()),
                 Driver::Unsupported{..}=>out.issues.push("Этот протокол пока не поддерживается.".into()),
             }

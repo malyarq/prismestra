@@ -57,6 +57,85 @@ fn setup() -> Setup {
     }
 }
 #[test]
+fn verified_wled_checks_identity_before_any_udp_output_and_adopts_geometry() {
+    use pc_control::app::{
+        config::{Groups, Project},
+        device_setup,
+        document::Document,
+        lighting_bindings::discovery,
+    };
+    use pc_control::runtime::output::Cancellation;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    let tcp = TcpListener::bind("127.0.0.1:0").unwrap();
+    let http = format!("http://{}", tcp.local_addr().unwrap());
+    let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
+    udp.set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
+    let ddp = udp.local_addr().unwrap();
+    let peer = std::thread::spawn(move || {
+        for count in [3, 4] {
+            let (mut stream, _) = tcp.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut bytes = Vec::new();
+            while !bytes.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                bytes.push(byte[0]);
+                assert!(bytes.len() < 8192);
+            }
+            assert!(bytes.starts_with(b"GET /json/info HTTP/1.1"));
+            let body =
+                format!(r#"{{"mac":"02aabbccddee","name":"Fixture","leds":{{"count":{count}}}}}"#);
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        }
+    });
+    let before = Document::from_lighting(Project {
+        version: 1,
+        schedule: Default::default(),
+        setup: setup(),
+        scene: scene(),
+        groups: Groups {
+            pc: vec!["wled".into()],
+            door: vec![],
+        },
+    })
+    .unwrap();
+    let target = discovery::Target::Device(before.lighting.setup.devices[0].clone());
+    let inventory = discovery::wled_factory(ddp, http)(target, Cancellation::default()).unwrap();
+    let candidate = &inventory.candidates[0];
+    let after =
+        device_setup::adopt_wled(&before, "wled", candidate.wled.as_ref().unwrap()).unwrap();
+    assert_eq!(before.lighting.setup.devices[0].leds, 2);
+    assert_eq!(after.lighting.setup.devices[0].leds, 3);
+    assert_eq!(after.lighting.setup.canvas.points.len(), 3);
+    let same = device_setup::adopt_wled(&after, "wled", candidate.wled.as_ref().unwrap()).unwrap();
+    assert_eq!(same, after);
+    let binding = candidate
+        .draft
+        .binding(&after.lighting.setup.devices[0])
+        .unwrap();
+    let bindings = [("wled".into(), binding)].into();
+    let (_, factory) = native::bound_factory(&after.lighting.setup, "wled", &bindings, 15).unwrap();
+    assert!(
+        factory(Cancellation::default()).is_err(),
+        "changed count must reject activation"
+    );
+    let mut packet = [0; 64];
+    assert!(
+        udp.recv(&mut packet).is_err(),
+        "metadata queries or failed activation must not send RGB"
+    );
+    peer.join().unwrap();
+}
+#[test]
 fn private_binding_apply_scene_udp_black_and_lease_drain_use_the_ordinary_factory() {
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     socket
@@ -150,12 +229,14 @@ fn invalid_capacity_rate_and_duplicate_canonical_endpoint_cannot_activate() {
         (
             "wled".into(),
             Binding::WledDdp {
+                controller: None,
                 endpoint: "127.0.0.1:4048".parse().unwrap(),
             },
         ),
         (
             "second".into(),
             Binding::WledDdp {
+                controller: None,
                 endpoint: "[::ffff:127.0.0.1]:4048".parse().unwrap(),
             },
         ),
@@ -170,6 +251,7 @@ fn invalid_capacity_rate_and_duplicate_canonical_endpoint_cannot_activate() {
     ] {
         assert!(
             Binding::WledDdp {
+                controller: None,
                 endpoint: address.parse().unwrap()
             }
             .validate(&setup.devices[0])
