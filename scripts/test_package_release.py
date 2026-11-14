@@ -14,6 +14,36 @@ spec.loader.exec_module(release)
 
 
 class PackageChecks(unittest.TestCase):
+    def test_portable_launch_allowlist_excludes_personal_state_and_hashes_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, binary = root / "source", root / "binary"
+            portable = source / "scripts/portable"
+            portable.mkdir(parents=True)
+            (source / "docs").mkdir()
+            binary.mkdir()
+            for name in ("Launch Prismestra.ps1", "Open Prismestra.cmd", "Start saved scene.cmd"):
+                (portable / name).write_text(name, encoding="utf-8")
+            (source / "docs/portable-launch.md").write_text("instructions", encoding="utf-8")
+            (portable / "lighting-local.json").write_text("private bindings", encoding="utf-8")
+            (portable / "profile.json").write_text("personal scene", encoding="utf-8")
+            hashes = release.copy_launch_files(source, binary)
+            self.assertEqual(set(hashes), {"Launch Prismestra.ps1", "Open Prismestra.cmd",
+                                           "Start saved scene.cmd", "PORTABLE-LAUNCH.md"})
+            self.assertEqual(set(p.name for p in binary.iterdir()), set(hashes))
+            for name, digest in hashes.items():
+                self.assertEqual(digest, release.sha256(binary / name))
+
+    def test_missing_portable_launch_file_fails_before_partial_copy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, binary = root / "source", root / "binary"
+            source.mkdir()
+            binary.mkdir()
+            with self.assertRaisesRegex(ValueError, "release launch file"):
+                release.copy_launch_files(source, binary)
+            self.assertEqual(list(binary.iterdir()), [])
+
     def test_manifest_does_not_publish_local_paths_or_package_ids(self):
         package = dict(name="example", version="1.0", license="MIT", repository=None,
                        source=None, manifest_path="C:/Users/private/secret/Cargo.toml",

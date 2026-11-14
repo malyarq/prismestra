@@ -27,6 +27,8 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Check release packaging boundaries
         run: python scripts/test_package_release.py
+      - name: Check portable launchers without hardware
+        run: python scripts/test_portable_launcher.py
       - name: Check embedded editor commands
         run: |
           node --check src/ui/windows/web/app.js

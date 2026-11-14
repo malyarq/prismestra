@@ -49,6 +49,8 @@ The internal crate and executable still use `pc-control` and `pc-control-ui`. Th
 
 First launch opens a preview. Set up and inspect a supported connection before applying it. When using an external backend, configure its server separately; Prismestra does not install or silently take over another controller.
 
+The Windows ZIP includes separate portable launchers: `Open Prismestra.cmd` opens a preview, and `Start saved scene.cmd` activates your saved `data/profile.json` with local connections from `data/state`. See [portable setup and launch](docs/portable-launch.md). Personal profiles, bindings and credentials are not bundled. Running the executable directly retains its existing per-user settings behavior.
+
 Closing the editor leaves the session in the tray. Its menu can reopen the editor, stop outputs or exit. Starting again with the same settings directory shows a tray hint and prevents a duplicate runtime.
 
 ## Compatibility is a testable claim
@@ -58,6 +60,8 @@ USB, a wireless dongle and Bluetooth on the same keyboard can expose different p
 We distinguish protocol implementation, software tests, an available setup path and testing on a particular physical device. Fake TCP/HTTP servers and UDP receivers validate packets and failure handling. They cannot validate colors, firmware behavior or radio stability. Device-specific details belong in the [compatibility table](docs/compatibility.md).
 
 The immediate focus is RGB, BLE, LCD and local home lighting. Native Windows Dynamic Lighting/LampArray support and additional protocols remain future work. There is no claim of universal Bluetooth or LCD support.
+
+The [product roadmap](docs/roadmap.md) records the next setup, measurement and distribution stages.
 
 ## Development
 
