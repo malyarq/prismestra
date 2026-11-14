@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="ru">
+<head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="dark"><title>Prismestra · Сцены, свет и экраны</title><link rel="stylesheet" href="ui.css"><link rel="icon" href="assets/favicon.svg"></head>
+<body>
+<aside class="sidebar">
+  <a class="brand" href="#library" aria-label="Prismestra, библиотека"><svg class="brand-symbol" viewBox="0 0 40 40" aria-hidden="true"><path fill="currentColor" stroke="none" d="M4 6H36L24 17ZM4 10L24 21L17 33ZM4 16L13 34H4Z"/></svg><span>prismestra</span></a>
+  <nav aria-label="Основная навигация"><button data-view="library"></button><button data-view="editor"></button><button data-view="devices"></button></nav>
+  <div class="sidebar-bottom"><button id="appearance-toggle" aria-label="Внешний вид" title="Внешний вид" aria-expanded="false"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 6h3m4 0h9M2 14h9m4 0h3"/><circle cx="7" cy="6" r="2"/><circle cx="13" cy="14" r="2"/></svg><span>Внешний вид</span></button></div>
+</aside>
+<div class="shell"><header class="topbar"><div class="project-context"><span>Локальный профиль</span><small>Prismestra</small></div><div class="breadcrumb" id="breadcrumb" hidden>Библиотека</div><span class="save-status" id="save-status">Подключение…</span></header><section id="native-error" class="notice" role="alert" hidden></section><main id="main"></main></div>
+<footer class="player" aria-label="Воспроизведение сцены">
+  <button class="player-scene" id="open-active" title="Открыть запущенную сцену"><canvas id="player-art" width="104" height="72"></canvas><span><strong id="player-name"></strong><small id="player-status"></small></span></button>
+  <div class="transport"><button class="button" id="play">Выключить свет</button></div>
+  <label class="master-brightness"><span id="sun-icon"></span><input id="master-brightness" type="range" min="0" max="100" aria-label="Яркость сцены (черновик)"><output id="master-value"></output></label><button class="button primary" id="footer-apply" disabled>Применить</button>
+</footer>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<dialog id="name-dialog" aria-labelledby="dialog-title"><form id="name-form"><h2 id="dialog-title">Новая сцена</h2><label>Название<input id="scene-name" maxlength="48" required autocomplete="off"></label><p class="muted">Сцена сохраняет параметры RGB. Настройки устройств и LCD сохраняются отдельно в профиле.</p><div class="dialog-actions"><button type="button" id="cancel-name" class="button">Отмена</button><button type="submit" class="button primary">Сохранить</button></div></form></dialog>
+<script src="app.js"></script><script src="theme.js"></script></body></html>

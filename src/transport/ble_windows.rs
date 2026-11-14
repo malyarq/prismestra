@@ -5,7 +5,7 @@ use std::{
     marker::PhantomData,
     rc::Rc,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -17,12 +17,13 @@ use windows::{
         },
         BluetoothCacheMode, BluetoothConnectionStatus, BluetoothLEDevice,
         GenericAttributeProfile::{
-            GattCharacteristic, GattCharacteristicProperties, GattCommunicationStatus,
-            GattDeviceService, GattSession, GattWriteOption,
+            GattCharacteristic, GattCharacteristicProperties,
+            GattClientCharacteristicConfigurationDescriptorValue, GattCommunicationStatus,
+            GattDeviceService, GattSession, GattValueChangedEventArgs, GattWriteOption,
         },
     },
     Foundation::TypedEventHandler,
-    Storage::Streams::DataWriter,
+    Storage::Streams::{DataReader, DataWriter},
     Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize},
     core::GUID,
 };
@@ -32,6 +33,25 @@ fn error(e: windows::core::Error) -> String {
 }
 fn uuid(short: u16) -> GUID {
     GUID::from_u128((short as u128) << 96 | 0x00001000800000805f9b34fb)
+}
+
+fn receive_pixel_capacity(
+    armed: &AtomicBool,
+    received: &Mutex<Option<Result<usize, String>>>,
+    read: impl FnOnce() -> Result<Option<usize>, String>,
+) {
+    if !armed.load(Ordering::Acquire) {
+        return;
+    }
+    let result = match read() {
+        Ok(None) => return,
+        Ok(Some(points)) => Ok(points),
+        Err(e) => Err(e),
+    };
+    let mut slot = received.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.is_none() {
+        *slot = Some(result);
+    }
 }
 
 // Macro preserves each operation's concrete projected type without requiring windows-future publicly.
@@ -80,11 +100,23 @@ impl Drop for Apartment {
 #[derive(Default)]
 pub struct WindowsBackend;
 pub struct WindowsLink {
+    pixel_capacity: Option<usize>,
     characteristic: Option<GattCharacteristic>,
     service: Option<GattDeviceService>,
     session: Option<GattSession>,
     device: Option<BluetoothLEDevice>,
     _apartment: Apartment,
+}
+struct Notification {
+    characteristic: GattCharacteristic,
+    token: Option<i64>,
+}
+impl Drop for Notification {
+    fn drop(&mut self) {
+        if let Some(token) = self.token.take() {
+            let _ = self.characteristic.RemoveValueChanged(token);
+        }
+    }
 }
 impl Drop for WindowsLink {
     fn drop(&mut self) {
@@ -180,6 +212,7 @@ impl Backend for WindowsBackend {
         }
         ble::check_wait(control, control.now())?;
         let mut link = WindowsLink {
+            pixel_capacity: None,
             characteristic: None,
             service: None,
             session: None,
@@ -252,6 +285,56 @@ impl Backend for WindowsBackend {
     }
 }
 impl Link for WindowsLink {
+    fn pixel_capacity(&mut self, control: &mut dyn Control) -> Result<usize, String> {
+        self.pixel_capacity = None;
+        let started = control.now();
+        let mut budget = ble::FrameControl {
+            inner: control,
+            started,
+        };
+        let result = self
+            .query_pixel_capacity(&mut budget)
+            .map_err(|e| format!("Surplife EA81 capability query: {e}"));
+        match result {
+            Ok(points) => {
+                self.pixel_capacity = Some(points);
+                Ok(points)
+            }
+            Err(e) => {
+                // Release the connection on failure, including a timed-out CCCD cleanup.
+                // The local callback token is always revoked by Notification::drop.
+                if let Some(session) = self.session.as_ref() {
+                    let _ = session.Close();
+                }
+                if let Some(device) = self.device.as_ref() {
+                    let _ = device.Close();
+                }
+                Err(e)
+            }
+        }
+    }
+    fn write_e1_pixels(
+        &mut self,
+        colors: &[crate::lighting::color::Rgb],
+        brightness: i32,
+        sequence: u8,
+        control: &mut dyn Control,
+    ) -> Result<(), String> {
+        (|| {
+            if self.pixel_capacity != Some(colors.len()) {
+                return Err("Pixel frame does not match current EA81 capability handshake".into());
+            }
+            ble::write_e1_pixel_frame(
+                colors,
+                brightness,
+                sequence,
+                self.max_pdu()?,
+                control,
+                &mut |packet, control| self.submit_raw(packet, control),
+            )
+        })()
+        .map_err(|e| format!("Surplife E104 frame: {e}"))
+    }
     fn address(&self) -> Result<u64, String> {
         self.device
             .as_ref()
@@ -275,6 +358,139 @@ impl Link for WindowsLink {
         if !ble::valid_packet(packet) {
             return Err("Packet is not an audited door command; no bytes sent".into());
         }
+        self.submit_raw(packet, control)
+    }
+    fn write_pixels(
+        &mut self,
+        colors: &[crate::lighting::color::Rgb],
+        brightness: i32,
+        sequence: u8,
+        control: &mut dyn Control,
+    ) -> Result<(), String> {
+        ble::write_pixel_frame(
+            colors,
+            brightness,
+            sequence,
+            self.max_pdu()?,
+            control,
+            &mut |packet, control| self.submit_raw(packet, control),
+        )
+    }
+}
+impl WindowsLink {
+    fn query_pixel_capacity(&mut self, control: &mut dyn Control) -> Result<usize, String> {
+        let mut stage = "discover FF02";
+        let result = (|| {
+            let started = control.now();
+            ble::check_wait(control, started)?;
+            let chars = bounded!(
+                self.service
+                    .as_ref()
+                    .unwrap()
+                    .GetCharacteristicsForUuidWithCacheModeAsync(
+                        uuid(0xff02),
+                        BluetoothCacheMode::Uncached
+                    ),
+                control
+            )
+            .map_err(error)?;
+            let list = chars.Characteristics().map_err(error)?;
+            if chars.Status().map_err(error)? != GattCommunicationStatus::Success
+                || list.Size().map_err(error)? != 1
+            {
+                return Err("FF02 notification characteristic unavailable or ambiguous".into());
+            }
+            let characteristic = list.GetAt(0).map_err(error)?;
+            if (characteristic.CharacteristicProperties().map_err(error)?
+                & GattCharacteristicProperties::Notify)
+                == GattCharacteristicProperties::None
+            {
+                return Err("FF02 has no notification support".into());
+            }
+            let received = Arc::new(Mutex::new(None));
+            let armed = Arc::new(AtomicBool::new(false));
+            let callback_received = received.clone();
+            let callback_armed = armed.clone();
+            let callback = TypedEventHandler::<GattCharacteristic, GattValueChangedEventArgs>::new(
+                move |_, args| {
+                    receive_pixel_capacity(&callback_armed, &callback_received, || {
+                        if let Some(args) = args.as_ref() {
+                            let buffer = args.CharacteristicValue().map_err(error)?;
+                            let length = buffer.Length().map_err(error)? as usize;
+                            if length > 4096 {
+                                return Err("EA81 notification exceeds host limit".into());
+                            }
+                            let reader = DataReader::FromBuffer(&buffer).map_err(error)?;
+                            let mut packet = vec![0; length];
+                            let read = reader.ReadBytes(&mut packet);
+                            let _ = reader.Close();
+                            read.map_err(error)?;
+                            ble::parse_pixel_capacity(&packet)
+                        } else {
+                            Ok(None)
+                        }
+                    });
+                    Ok(())
+                },
+            );
+            let mut subscription = Notification {
+                characteristic,
+                token: None,
+            };
+            subscription.token = Some(
+                subscription
+                    .characteristic
+                    .ValueChanged(&callback)
+                    .map_err(error)?,
+            );
+            stage = "subscribe FF02";
+            let status = bounded!(
+                subscription
+                    .characteristic
+                    .WriteClientCharacteristicConfigurationDescriptorAsync(
+                        GattClientCharacteristicConfigurationDescriptorValue::Notify
+                    ),
+                control
+            )
+            .map_err(error)?;
+            if status != GattCommunicationStatus::Success {
+                return Err("FF02 notification subscription failed".into());
+            }
+            // No cached notification is accepted. Arm immediately before the fixed query so
+            // a response arriving during WriteWithoutResponse completion is not missed.
+            armed.store(true, Ordering::Release);
+            let result = (|| {
+                stage = "send EA81";
+                self.submit_raw(&ble::PIXEL_CAPACITY_QUERY, control)?;
+                stage = "wait for EA81 notification";
+                ble::wait_pixel_capacity(control, started, &mut || {
+                    received.lock().unwrap_or_else(|e| e.into_inner()).take()
+                })
+            })();
+            armed.store(false, Ordering::Release);
+            // Normal completion disables remote notifications within the same total budget.
+            // On any error the caller closes the connection; Drop revokes the callback.
+            if result.is_ok() {
+                stage = "unsubscribe FF02";
+                let status = bounded!(
+                    subscription
+                        .characteristic
+                        .WriteClientCharacteristicConfigurationDescriptorAsync(
+                            GattClientCharacteristicConfigurationDescriptorValue::None
+                        ),
+                    control
+                )
+                .map_err(error)?;
+                if status != GattCommunicationStatus::Success {
+                    return Err("FF02 notification unsubscribe failed".into());
+                }
+            }
+            ble::check_wait(control, started)?;
+            result
+        })();
+        result.map_err(|e| format!("{stage}: {e}"))
+    }
+    fn submit_raw(&mut self, packet: &[u8], control: &mut dyn Control) -> Result<(), String> {
         if control.cancelled() {
             return Err("Operation cancelled or timed out; disconnected".into());
         }
@@ -310,6 +526,49 @@ impl Link for WindowsLink {
 mod tests {
     use super::*;
     use std::time::Duration;
+    #[test]
+    fn notification_read_error_reaches_capacity_wait_without_sleeping() {
+        let received = Mutex::new(None);
+        let armed = AtomicBool::new(true);
+        let read_error = "WinRT error: injected ReadBytes failure; disconnected";
+        receive_pixel_capacity(&armed, &received, || Err(read_error.into()));
+        let mut clock = Clock {
+            time: Duration::ZERO,
+            cancel: false,
+        };
+        let result = ble::wait_pixel_capacity(&mut clock, Duration::ZERO, &mut || {
+            received.lock().unwrap().take()
+        });
+        assert_eq!(result, Err(read_error.into()));
+        assert_eq!(clock.time, Duration::ZERO);
+    }
+    #[test]
+    fn disarmed_notification_does_not_read_or_publish() {
+        let received = Mutex::new(None);
+        receive_pixel_capacity(&AtomicBool::new(false), &received, || {
+            panic!("disarmed callback must not read notification")
+        });
+        assert_eq!(*received.lock().unwrap(), None);
+    }
+    #[test]
+    fn unrelated_notification_is_ignored_and_first_result_is_preserved() {
+        let armed = AtomicBool::new(true);
+        let received = Mutex::new(None);
+        receive_pixel_capacity(&armed, &received, || Ok(None));
+        assert_eq!(*received.lock().unwrap(), None);
+        receive_pixel_capacity(&armed, &received, || Ok(Some(153)));
+        receive_pixel_capacity(&armed, &received, || Err("later read failure".into()));
+        receive_pixel_capacity(&armed, &received, || Ok(Some(256)));
+        assert_eq!(*received.lock().unwrap(), Some(Ok(153)));
+
+        let received = Mutex::new(None);
+        receive_pixel_capacity(&armed, &received, || Err("first read failure".into()));
+        receive_pixel_capacity(&armed, &received, || Ok(Some(153)));
+        assert_eq!(
+            *received.lock().unwrap(),
+            Some(Err("first read failure".into()))
+        );
+    }
     struct Clock {
         time: Duration,
         cancel: bool,

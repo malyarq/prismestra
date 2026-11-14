@@ -17,6 +17,9 @@ LICENSE_CHOICES = {
     "BSD-3-Clause": "BSD-3-Clause", "GPL-2.0": "GPL-2.0-only",
     "GPL-2.0-or-later": "GPL-2.0-only",
     "MIT OR Apache-2.0": "MIT", "Apache-2.0 OR MIT": "MIT",
+    # flume 0.12 ships LICENSE-MIT and explicitly offers either license in README.
+    "Apache-2.0/MIT": "MIT",
+    "MIT OR BSD-3-Clause": "MIT",
     "0BSD OR MIT OR Apache-2.0": "0BSD", "Unlicense OR MIT": "MIT",
     "Zlib OR Apache-2.0 OR MIT": "Zlib", "BSD-3-Clause OR Apache-2.0": "BSD-3-Clause",
     "MIT OR Apache-2.0 OR Zlib": "MIT", "MIT OR Zlib OR Apache-2.0": "MIT",
@@ -67,6 +70,22 @@ def write_zip(folder, destination):
 def sha256(path):
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def copy_launch_files(source, binary):
+    """Use an explicit allowlist; never copy a workstation's data or bindings."""
+    files = {
+        "Launch Prismestra.ps1": source / "scripts/portable/Launch Prismestra.ps1",
+        "Open Prismestra.cmd": source / "scripts/portable/Open Prismestra.cmd",
+        "Start saved scene.cmd": source / "scripts/portable/Start saved scene.cmd",
+        "PORTABLE-LAUNCH.md": source / "docs/portable-launch.md",
+    }
+    for name, path in files.items():
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"Missing or unsafe release launch file: {name}")
+    for name, path in files.items():
+        shutil.copy2(path, binary / name)
+    return {name: sha256(binary / name) for name in sorted(files)}
 
 
 def notice_files(root):
@@ -132,6 +151,7 @@ def main():
     shutil.copy2(build / target / "release" / "pc-control-ui.exe", executable)
     check_build_paths(executable, source)
     shutil.copy2(source / "LICENSE", binary / "LICENSE")
+    launch_files = copy_launch_files(source, binary)
     notices = binary / "licenses"
     for package in metadata["packages"]:
         root = Path(package["manifest_path"]).parent
@@ -153,7 +173,8 @@ def main():
             if destination.exists() and destination.read_bytes() != path.read_bytes():
                 raise ValueError(f"Conflicting release notices: {package['name']}")
             shutil.copy2(path, destination)
-    for path in (source / "src").rglob("*-LICENSE*"):
+    project_notices = list((source / "src").rglob("*-LICENSE*")) + list((source / "src").rglob("*-OFL.txt"))
+    for path in sorted(project_notices):
         destination = notices / "project" / path.relative_to(source)
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, destination)
@@ -166,17 +187,27 @@ def main():
         "target": target, "rustc": rustc, "cargo": run("cargo", "--version", cwd=repo),
         "rustflags": ["--remap-path-prefix=<source>=."],
         "executable_sha256": sha256(executable), "source_archive": source_zip.name,
+        "launch_files_sha256": launch_files,
         "packages": packages,
     }
     for folder in (source, binary):
         (folder / "release-manifest.json").write_text(
             json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     (binary / "START-HERE.md").write_text(
-        "# Prismestra\n\nRun `Prismestra.exe` to open the editor.\n\n"
+        "# Prismestra\n\nRun `Open Prismestra.cmd` for a portable preview. "
+        "Save your profile as `data/profile.json` inside the extracted folder. "
+        "After configuring local connections, `Start saved scene.cmd` starts that saved scene "
+        "with its saved hardware outputs. See PORTABLE-LAUNCH.md for setup and limitations.\n\n"
+        "Running `Prismestra.exe` directly keeps its existing per-user settings behavior. "
+        "Do not mix it with the portable launchers while another session owns your devices.\n\n"
         "Windows x64 builds require the x64 Visual C++ v14 runtime. "
         "Microsoft's supported runtime downloads: "
         "https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist"
         "#latest-supported-redistributable-version\n\n"
+        "The editor uses Microsoft Edge WebView2 Runtime 105 or newer. "
+        "It is not bundled; installation information: "
+        "https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution\n\n"
+        "Use `Prismestra.exe --classic-editor` for the legacy native editor if needed.\n\n"
         "Closing the editor leaves the session in the tray. "
         "Use its menu to reopen the editor, stop outputs or exit. "
         "A second launch with the same settings directory shows a tray hint.\n\n"

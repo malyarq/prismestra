@@ -70,6 +70,48 @@ fn setup() -> Setup {
         },
     }
 }
+
+#[test]
+fn door_pixel_preset_is_explicit_and_preserves_legacy_profiles() {
+    let pixels = pc_control::app::device_setup::preset("door153")
+        .unwrap()
+        .device("strip")
+        .unwrap();
+    assert_eq!(pixels.leds, 153);
+    assert_eq!(pixels.rate_hz, 10);
+    assert!(!pixels.enabled);
+    assert_eq!(pixels.driver, Driver::DoorBle);
+    pixels.validate().unwrap();
+    let legacy = pc_control::app::device_setup::preset("door20")
+        .unwrap()
+        .device("strip")
+        .unwrap();
+    assert_eq!(legacy.leds, 20);
+    legacy.validate().unwrap();
+    let mut invalid = pixels;
+    invalid.leds = 152;
+    assert!(invalid.validate().is_err());
+    invalid.leds = 153;
+    invalid.role = Role::Ambient;
+    assert!(invalid.validate().is_err());
+}
+#[test]
+fn surplife_family_count_is_explicit_and_separate_from_legacy() {
+    let preset = pc_control::app::device_setup::preset("surplife-e1").unwrap();
+    for count in [1, 20, 152, 153, 256, 4096] {
+        let device = preset.device_with_leds("strip", count).unwrap();
+        assert_eq!(device.driver, Driver::SurplifeE1Pixels);
+        assert_eq!(device.leds, count);
+        assert_eq!(device.rate_hz, 10);
+        assert!(!device.enabled);
+        device.validate().unwrap();
+    }
+    for count in [0, 4097] {
+        assert!(preset.device_with_leds("strip", count).is_err());
+    }
+    let old: Driver = serde_json::from_str(r#"{"type":"door_ble"}"#).unwrap();
+    assert_eq!(old, Driver::DoorBle);
+}
 fn bindings() -> Bindings {
     BTreeMap::from([
         (

@@ -22,8 +22,10 @@ pub mod pawnio_windows;
 pub mod serial;
 #[cfg(windows)]
 pub mod serial_windows;
+pub mod service_discovery;
 pub mod skydimo;
 pub mod valkyrie;
 #[cfg(windows)]
 mod windows_io;
 pub mod wled;
+pub mod wled_info;

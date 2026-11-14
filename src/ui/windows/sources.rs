@@ -1,4 +1,4 @@
-//! Local preferences and observation UI. Native readers start only on explicit operator action.
+//! Local preferences and observation UI. Readers require explicit UI or connected-startup intent.
 use super::*;
 use crate::app::{
     sensor_bindings::{Catalog, Scope},
@@ -233,7 +233,9 @@ impl App {
     fn source_discovery_mode(&self) -> bool {
         self.combo_index(MODE) == Some(2)
     }
-    fn source_scope_inputs(&self) -> Result<(Scope, Vec<String>), String> {
+    pub(in crate::ui::windows) fn source_scope_inputs(
+        &self,
+    ) -> Result<(Scope, Vec<String>), String> {
         let name = self
             .path
             .as_ref()

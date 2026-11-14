@@ -1,4 +1,5 @@
 use super::*;
+use serde_json::json;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::thread::{self, JoinHandle};
@@ -123,7 +124,7 @@ fn validates_urls_tokens_and_entity_names_without_io() {
 
 #[test]
 fn metadata_is_read_only_and_filters_lights() {
-    let body = br#"[{"entity_id":"sensor.temp","state":"19"},{"entity_id":"light.room","state":"on","attributes":{"friendly_name":"Room","supported_color_modes":["rgb","brightness"]}},{"entity_id":"light.bad/path"}]"#;
+    let body = br#"[{"entity_id":"sensor.temp","state":"19"},{"entity_id":"light.room","state":"on","attributes":{"friendly_name":"Room","supported_color_modes":["rgb"]}},{"entity_id":"light.bad/path"}]"#;
     let (url, server) = server(vec![response("200 OK", body)]);
     let lights = client(&url).lights(deadline(), || false).unwrap();
     assert_eq!(
@@ -132,7 +133,7 @@ fn metadata_is_read_only_and_filters_lights() {
             entity_id: "light.room".into(),
             name: Some("Room".into()),
             state: Some("on".into()),
-            supported_color_modes: vec!["rgb".into(), "brightness".into()]
+            supported_color_modes: vec!["rgb".into()]
         }]
     );
     let requests = server.join().unwrap();
@@ -143,7 +144,7 @@ fn metadata_is_read_only_and_filters_lights() {
 #[test]
 fn binds_once_then_posts_exact_entity_color_and_off_without_inventory() {
     let (url, server) = server(vec![
-        response("200 OK", br#"{"entity_id":"light.room"}"#),
+        response("200 OK", br#"{"entity_id":"light.room","state":"on","attributes":{"supported_color_modes":["rgb"]}}"#),
         response("200 OK", b"[]"),
         response("200 OK", b"[]"),
     ]);
@@ -174,6 +175,65 @@ fn binds_once_then_posts_exact_entity_color_and_off_without_inventory() {
 }
 
 #[test]
+fn binding_rejects_unavailable_and_unknown_capabilities_without_posting() {
+    for (state, modes, expected) in [
+        ("unavailable", json!(["rgb"]), Error::EntityUnavailable),
+        ("unknown", json!(["rgb"]), Error::EntityUnavailable),
+        ("on", json!(null), Error::UnsupportedCapabilities),
+        ("on", json!(["rgb", 42]), Error::UnsupportedCapabilities),
+        ("on", json!(["future"]), Error::UnsupportedCapabilities),
+        ("bad-state", json!(["rgb"]), Error::InvalidResponse),
+    ] {
+        let body = serde_json::to_vec(&json!({"entity_id":"light.room", "state":state, "attributes":{"supported_color_modes":modes}})).unwrap();
+        let (url, server) = server(vec![response("200 OK", &body)]);
+        let mut client = client(&url);
+        assert_eq!(
+            client.bind_light("light.room", deadline(), || false),
+            Err(expected)
+        );
+        assert_eq!(
+            client.set_color([1, 2, 3], deadline(), || false),
+            Err(Error::InvalidInput)
+        );
+        assert!(client.entity.is_none() && client.capability.is_none());
+        assert_eq!(server.join().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn output_uses_bound_capabilities_for_all_supported_modes() {
+    for mode in [
+        "rgb",
+        "hs",
+        "xy",
+        "rgbw",
+        "rgbww",
+        "brightness",
+        "color_temp",
+        "onoff",
+    ] {
+        let state = serde_json::to_vec(&json!({"entity_id":"light.room", "state":"off", "attributes":{"supported_color_modes":[mode]}})).unwrap();
+        let (url, server) = server(vec![response("200 OK", &state), response("200 OK", b"[]")]);
+        let mut client = client(&url);
+        client
+            .bind_light("light.room", deadline(), || false)
+            .unwrap();
+        client.set_color([64, 32, 0], deadline(), || false).unwrap();
+        let requests = server.join().unwrap();
+        let body: Value =
+            serde_json::from_str(requests[1].split_once("\r\n\r\n").unwrap().1).unwrap();
+        let mut expected = json!({"entity_id":"light.room"});
+        if mode != "onoff" {
+            expected["brightness"] = json!(64);
+        }
+        if matches!(mode, "rgb" | "hs" | "xy" | "rgbw" | "rgbww") {
+            expected["rgb_color"] = json!([255, 128, 0]);
+        }
+        assert_eq!(body, expected, "{mode}");
+    }
+}
+
+#[test]
 fn authentication_missing_entity_and_http_failures_are_distinct_and_redacted() {
     for (status, expected) in [
         ("401 Unauthorized", Error::Authentication),
@@ -195,7 +255,7 @@ fn authentication_missing_entity_and_http_failures_are_distinct_and_redacted() {
 #[test]
 fn failed_rebinding_clears_old_target_and_invalid_json_is_not_echoed() {
     let (url, server) = server(vec![
-        response("200 OK", br#"{"entity_id":"light.room"}"#),
+        response("200 OK", br#"{"entity_id":"light.room","state":"on","attributes":{"supported_color_modes":["rgb"]}}"#),
         response("200 OK", b"fake.test-token-not-json"),
     ]);
     let mut client = client(&url);

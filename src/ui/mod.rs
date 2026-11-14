@@ -1,4 +1,5 @@
 //! Native operation surface. Initial UI is an explicit scene/map/schedule preview.
+pub mod catalog;
 pub mod editor;
 #[cfg(windows)]
 pub mod paint;

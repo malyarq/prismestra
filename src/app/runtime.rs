@@ -26,6 +26,7 @@ const SCOPE: &str = "pc-control.runtime-desired";
 const ACCEPTED: &str = "Desired state persisted; transport completion is tracked separately";
 pub mod coordinator;
 mod outputs;
+mod recovery;
 mod registry_input;
 pub use outputs::{LcdOutput, OutputPlan, RgbOutput};
 mod temperature_stream;
@@ -227,6 +228,7 @@ pub struct Runtime {
     output_revision: u64,
     rgb_specs: BTreeMap<String, RgbSpec>,
     lcd_specs: BTreeMap<String, LcdSpec>,
+    output_recovery: BTreeMap<String, recovery::Recovery>,
     capture_factory: Option<CaptureFactory>,
     samples: Arc<[lcd::Sample]>,
     revision: u64,
@@ -293,6 +295,7 @@ impl Runtime {
             output_revision: 0,
             rgb_specs: BTreeMap::new(),
             lcd_specs: BTreeMap::new(),
+            output_recovery: BTreeMap::new(),
             capture_factory: None,
             samples: Arc::from([]),
             revision: 1,
@@ -742,6 +745,8 @@ impl Runtime {
                 self.capture_factory = outputs.capture;
                 self.output_revision += 1;
             }
+            self.output_recovery
+                .retain(|id, _| self.rgb_specs.contains_key(id) || self.lcd_specs.contains_key(id));
             self.document = proposal;
             self.document_revision = self.document_revision.wrapping_add(1);
             self.host = host;
@@ -1060,6 +1065,7 @@ impl Runtime {
         let f = factory.clone();
         self.host.attach_claimed(id, keys.clone(), move |c| f(c))?;
         self.rgb_specs.insert(id.into(), RgbSpec { keys, factory });
+        self.reset_output_recovery(id);
         self.bump_view();
         Ok(())
     }
@@ -1104,6 +1110,7 @@ impl Runtime {
         })?;
         self.lcd.insert(id.into(), worker);
         self.lcd_specs.insert(id.into(), LcdSpec { keys, factory });
+        self.reset_output_recovery(id);
         self.bump_view();
         self.bump()
     }
@@ -1141,6 +1148,9 @@ impl Runtime {
         Ok(())
     }
     fn stop_channels(&mut self) {
+        for recovery in self.output_recovery.values_mut() {
+            *recovery = recovery::Recovery::default();
+        }
         self.injected_inputs.clear();
         self.samples = Arc::from([]);
         self.sensor_stamps.clear();
@@ -1511,6 +1521,7 @@ impl Runtime {
                 self.schedule_tick(unix_seconds)?;
                 self.last_wall = Some(unix_seconds);
             }
+            self.recover_failed_outputs(now_us)?;
             self.publish()?;
             self.host.tick(now_us)?;
             Ok(())
@@ -1530,5 +1541,8 @@ impl Drop for Runtime {
     }
 }
 
+#[cfg(test)]
+#[path = "runtime/recovery_tests.rs"]
+mod recovery_tests;
 #[cfg(test)]
 mod tests;

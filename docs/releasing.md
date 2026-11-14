@@ -5,6 +5,7 @@ Use a clean checkout of the exact commit whose Windows checks and acceptance res
 ```powershell
 cargo fetch --locked
 python scripts/test_package_release.py
+python scripts/test_portable_launcher.py
 $releaseCommit = git rev-parse HEAD
 python scripts/package_release.py --expected-commit $releaseCommit --output C:\builds\prismestra-release
 ```
@@ -28,3 +29,5 @@ To rebuild from the source archive, install the recorded compiler/toolchain and 
 Before publishing, test the packaged executable with a clean state directory, verify its checksum, and complete the applicable editor, engine lifecycle, device and resource checks. Passing software CI does not certify physical devices. Never package credentials or private hardware bindings. Release artifacts must match the tested final commit.
 
 The MSVC binary dynamically imports `VCRUNTIME140.dll`. The launch notes point to [Microsoft's supported x64 Visual C++ v14 runtime](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist#latest-supported-redistributable-version); the runtime installer is not bundled. Execution on a clean Windows installation without development tools remains a separate acceptance check.
+
+The binary package also contains the [portable launchers](portable-launch.md). They are copied from an explicit source allowlist and their hashes are recorded in `launch_files_sha256` in the manifest. No `data` directory, personal profile, local connection file or credential is copied into the release. Test the launchers from the extracted package with an isolated writable folder; do not use your live hardware state for packaging checks.

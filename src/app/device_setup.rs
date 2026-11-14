@@ -31,6 +31,7 @@ enum Family {
     OpenRgb,
     Wled,
     Door,
+    Surplife,
     Lcd,
     Ene,
     Valkyrie(&'static str),
@@ -66,9 +67,21 @@ static BASE_PRESETS: &[Preset] = &[
     },
     Preset {
         id: "door20",
-        label: "Door BLE · 20",
+        label: "Surplife BLE · 20 групп",
         family: Family::Door,
         leds: 20,
+    },
+    Preset {
+        id: "door153",
+        label: "Surplife BLE · 153 LED",
+        family: Family::Door,
+        leds: crate::lighting::door::PIXEL_LEDS,
+    },
+    Preset {
+        id: "surplife-e1",
+        label: "Surplife E1 · адресные точки",
+        family: Family::Surplife,
+        leds: crate::lighting::door::PIXEL_LEDS,
     },
     Preset {
         id: "tt-lcd",
@@ -122,7 +135,7 @@ pub fn preset(id: &str) -> Result<&'static Preset, String> {
 }
 impl Preset {
     pub fn target(&self) -> Target {
-        if matches!(self.family, Family::Door) {
+        if matches!(self.family, Family::Door | Family::Surplife) {
             Target::Door
         } else {
             Target::Pc
@@ -138,7 +151,10 @@ impl Preset {
     }
     pub fn device_with_leds(&self, id: &str, leds: usize) -> Result<Device, String> {
         if leds != self.leds
-            && !matches!(self.family, Family::Wled | Family::OpenRgb)
+            && !matches!(
+                self.family,
+                Family::Wled | Family::OpenRgb | Family::Surplife
+            )
             && !matches!(self.family,Family::Skydimo(model) if crate::transport::skydimo::model(model).is_some_and(|m|m.resizable))
         {
             return Err("Этот шаблон имеет фиксированное число LED".into());
@@ -148,6 +164,7 @@ impl Preset {
             Family::OpenRgb => Driver::OpenRgb,
             Family::Wled => Driver::WledDdp,
             Family::Door => Driver::DoorBle,
+            Family::Surplife => Driver::SurplifeE1Pixels,
             Family::Lcd => Driver::TtLcd,
             Family::Ene => Driver::EneDram,
             Family::Valkyrie(model) => Driver::Valkyrie {
@@ -170,6 +187,11 @@ impl Preset {
             leds,
             rate_hz: if matches!(self.family, Family::HomeAssistant) {
                 1
+            } else if matches!(self.family, Family::Surplife)
+                || (matches!(self.family, Family::Door)
+                    && leds == crate::lighting::door::PIXEL_LEDS)
+            {
+                10
             } else {
                 25
             },
@@ -244,6 +266,55 @@ pub fn adopt_openrgb(
         }));
     next.validate()?;
     Ok(next)
+}
+/// Explicit Apply accepts the controller's reported length; preserve same-sized layouts.
+pub fn adopt_wled(
+    document: &Document,
+    id: &str,
+    info: &crate::transport::wled_info::Info,
+) -> Result<Document, String> {
+    adopt_strip(document, id, Driver::WledDdp, info.led_count)
+}
+pub fn adopt_surplife(document: &Document, id: &str, points: usize) -> Result<Document, String> {
+    adopt_strip(document, id, Driver::SurplifeE1Pixels, points)
+}
+fn adopt_strip(
+    document: &Document,
+    id: &str,
+    driver: Driver,
+    points: usize,
+) -> Result<Document, String> {
+    let mut device = document
+        .lighting
+        .setup
+        .devices
+        .iter()
+        .find(|d| d.id == id)
+        .cloned()
+        .ok_or("Strip device was removed")?;
+    if device.driver != driver {
+        return Err("Strip device family changed".into());
+    }
+    if device.leds == points {
+        return Ok(document.clone());
+    }
+    if device.role != Role::Canvas {
+        return Err("LED count changed: update the ambient route before Apply".into());
+    }
+    device.leds = points;
+    let canvas = &document.lighting.setup.canvas;
+    replace(
+        document,
+        id,
+        device,
+        target(document, id),
+        Some(Layout::Line {
+            x0: 0,
+            y0: 0,
+            x1: canvas.width - 1,
+            y1: 0,
+        }),
+    )
 }
 fn group(document: &mut Document, id: &str, next: Target) {
     if target(document, id) == next

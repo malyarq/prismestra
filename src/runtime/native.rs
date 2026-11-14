@@ -79,9 +79,25 @@ pub fn bound_factory(
                 &cancel,
             )?))
         }),
-        (Driver::WledDdp, Binding::WledDdp { endpoint }) => Arc::new(move |cancel| {
+        (
+            Driver::WledDdp,
+            Binding::WledDdp {
+                endpoint,
+                controller,
+            },
+        ) => Arc::new(move |cancel| {
             if cancel.cancelled() {
                 return Err("RGB output stopping".into());
+            }
+            if let Some(controller) = &controller {
+                let info = crate::transport::wled_info::Endpoint::parse(&controller.http_endpoint)
+                    .map_err(|e| e.to_string())?
+                    .query(
+                        std::time::Instant::now() + std::time::Duration::from_secs(3),
+                        || cancel.cancelled(),
+                    )
+                    .map_err(|e| e.to_string())?;
+                controller.verify(&info, device.leds)?;
             }
             Ok(Box::new(super::network::Wled::connect(
                 endpoint,
@@ -110,8 +126,24 @@ pub fn bound_factory(
             if !(1..=100).contains(&door_brightness) {
                 return Err("Invalid door brightness".into());
             }
-            Arc::new(move |cancel| door(address, door_brightness)(cancel))
+            let leds = device.leds;
+            Arc::new(move |cancel| door(address, door_brightness, leds)(cancel))
         }
+        (Driver::SurplifeE1Pixels, Binding::Ble { address }) => Arc::new(move |cancel| {
+            use ble::Backend;
+            let link = ble_windows::WindowsBackend.connect(
+                address,
+                &mut Control::new(cancel.clone()),
+                &mut |_| {},
+            )?;
+            Ok(Box::new(adapters::Ble::with_e1(
+                link,
+                address,
+                door_brightness,
+                device.leds,
+                &cancel,
+            )?))
+        }),
         (Driver::Fusion2 { headers }, Binding::Hid { path }) => Arc::new(move |cancel| {
             let verified = feature_hid::open(
                 &mut feature_hid_windows::NativeBackend,
@@ -186,14 +218,24 @@ pub(crate) fn serial(
 pub(crate) fn door(
     address: u64,
     brightness: i32,
+    leds: usize,
 ) -> impl FnOnce(Cancellation) -> Result<Box<dyn RgbDriver>, String> + Send + 'static {
     move |cancel| {
         use ble::Backend;
-        if !crate::lighting::door::allowed(address) || !(1..=100).contains(&brightness) {
+        if !crate::lighting::door::allowed(address)
+            || !(1..=100).contains(&brightness)
+            || ![
+                crate::lighting::door::COLOR_GROUPS,
+                crate::lighting::door::PIXEL_LEDS,
+            ]
+            .contains(&leds)
+        {
             return Err("Invalid door binding/brightness".into());
         }
         let link =
             ble_windows::WindowsBackend.connect(address, &mut Control::new(cancel), &mut |_| {})?;
-        Ok(Box::new(adapters::Ble::new(link, address, brightness)?))
+        Ok(Box::new(adapters::Ble::with_leds(
+            link, address, brightness, leds,
+        )?))
     }
 }

@@ -11,7 +11,8 @@
 //! HTTPS uses WinHTTP's certificate validation without security exceptions.
 //! A successful service response is submission, not physical light confirmation.
 
-use serde_json::{Value, json};
+use crate::devices::home_assistant::LightCapability;
+use serde_json::Value;
 use std::ffi::c_void;
 use std::ptr::{null, null_mut};
 use std::time::Instant;
@@ -29,6 +30,8 @@ pub enum Error {
     Deadline,
     Authentication,
     MissingEntity,
+    EntityUnavailable,
+    UnsupportedCapabilities,
     Http(u16),
     WinHttp(u32),
     ResponseTooLarge,
@@ -158,11 +161,18 @@ pub struct Light {
     pub supported_color_modes: Vec<String>,
 }
 
+impl Light {
+    pub fn capability(&self) -> Option<LightCapability> {
+        LightCapability::from_modes(&self.supported_color_modes)
+    }
+}
+
 // Deliberately no Debug/Clone: the Bearer token is private and never formatted.
 pub struct Client {
     endpoint: Endpoint,
     token: String,
     entity: Option<String>,
+    capability: Option<LightCapability>,
 }
 
 impl Client {
@@ -180,6 +190,7 @@ impl Client {
             endpoint,
             token,
             entity: None,
+            capability: None,
         })
     }
 
@@ -206,11 +217,9 @@ impl Client {
                 state: bounded_text(&state["state"]),
                 supported_color_modes: attrs["supported_color_modes"]
                     .as_array()
-                    .into_iter()
-                    .flatten()
-                    .take(32)
-                    .filter_map(bounded_text)
-                    .collect(),
+                    .filter(|modes| modes.len() <= 32)
+                    .and_then(|modes| modes.iter().map(bounded_text).collect::<Option<Vec<_>>>())
+                    .unwrap_or_default(),
             });
         }
         check(deadline, &mut cancelled)?;
@@ -226,6 +235,7 @@ impl Client {
         mut cancelled: impl FnMut() -> bool,
     ) -> Result<(), Error> {
         self.entity = None;
+        self.capability = None;
         if !valid_entity(entity) {
             return Err(Error::InvalidInput);
         }
@@ -241,14 +251,24 @@ impl Client {
         if state["entity_id"].as_str() != Some(entity) {
             return Err(Error::InvalidResponse);
         }
+        match state["state"].as_str() {
+            Some("on" | "off") => (),
+            Some("unknown" | "unavailable") => return Err(Error::EntityUnavailable),
+            _ => return Err(Error::InvalidResponse),
+        }
+        let capability = LightCapability::from_attributes(&state["attributes"])
+            .ok_or(Error::UnsupportedCapabilities)?;
         check(deadline, &mut cancelled)?;
         self.entity = Some(entity.to_owned());
+        self.capability = Some(capability);
         Ok(())
     }
 
     /// Control the bound whole light, at low rate, with one fixed-service POST.
     /// Black means turn_off; otherwise RGB8 peak becomes brightness (1..255),
-    /// with normalized RGB chromaticity. A later removal can still return HTTP
+    /// with normalized RGB chromaticity for color lights. Dimmable white lights
+    /// receive brightness only; on/off lights receive no color or brightness.
+    /// HA translates RGB to the supported color format. A later removal can return HTTP
     /// success: this reports only service acceptance, never confirmed state.
     /// An error/cancellation after sending cannot roll back an applied command.
     pub fn set_color(
@@ -258,17 +278,8 @@ impl Client {
         mut cancelled: impl FnMut() -> bool,
     ) -> Result<(), Error> {
         let entity = self.entity.as_deref().ok_or(Error::InvalidInput)?;
-        let peak = *rgb.iter().max().unwrap();
-        let (service, data) = if peak == 0 {
-            ("turn_off", json!({"entity_id": entity}))
-        } else {
-            let normalized =
-                rgb.map(|c| ((u16::from(c) * 255 + u16::from(peak) / 2) / u16::from(peak)) as u8);
-            (
-                "turn_on",
-                json!({"entity_id": entity, "rgb_color": normalized, "brightness": peak}),
-            )
-        };
+        let capability = self.capability.ok_or(Error::InvalidInput)?;
+        let (service, data) = capability.command(entity, rgb);
         let body = serde_json::to_vec(&data).map_err(|_| Error::InvalidInput)?;
         self.request(
             "POST",
