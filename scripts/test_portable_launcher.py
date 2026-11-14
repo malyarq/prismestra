@@ -1,6 +1,7 @@
 """Exercise the shipped launcher with Windows PowerShell 5 and a harmless argv recorder."""
 
 import base64
+import ctypes
 import json
 import os
 from pathlib import Path
@@ -21,7 +22,9 @@ class PortableLauncherChecks(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.temporary = tempfile.TemporaryDirectory(prefix="pl-")
-        cls.base = Path(cls.temporary.name)
+        # Hosted Windows runners can expose TEMP through an 8.3 alias (RUNNER~1).
+        # Match the full filesystem path PowerShell passes to the application.
+        cls.base = Path(cls.temporary.name).resolve()
         source = cls.base / "Recorder.cs"
         source.write_text('''using System;
 using System.IO;
@@ -104,6 +107,19 @@ class Recorder {
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.recorded(), self.expected())
         self.assertFalse(list((self.package / "data/state").glob(".launcher-write-*")))
+
+    def test_fixture_canonicalizes_short_path_alias(self):
+        self.assertEqual(self.base, Path(self.temporary.name).resolve())
+        short_path = ctypes.create_unicode_buffer(32768)
+        get_short_path = ctypes.windll.kernel32.GetShortPathNameW
+        get_short_path.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+        get_short_path.restype = ctypes.c_uint32
+        length = get_short_path(str(self.base), short_path, len(short_path))
+        self.assertGreater(length, 0, "Cannot query the fixture's Windows short path")
+        self.assertLess(length, len(short_path))
+        if os.path.normcase(short_path.value) == os.path.normcase(str(self.base)):
+            self.skipTest("This filesystem has no distinct 8.3 alias for the fixture")
+        self.assertEqual(Path(short_path.value).resolve(), self.base)
 
     def test_preview_uses_profile_without_hardware(self):
         self.saved_profile()
