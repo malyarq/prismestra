@@ -29,6 +29,7 @@ pub mod coordinator;
 mod managed_backend;
 mod outputs;
 mod recovery;
+pub use recovery::{OpenRgbRetryStatus, OpenRgbRetryTicket};
 mod registry_input;
 #[cfg(windows)]
 pub(crate) use outputs::OutputActivity;

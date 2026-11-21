@@ -89,6 +89,260 @@ fn tick(engine: &mut Runtime) {
         .unwrap();
 }
 #[test]
+fn manual_openrgb_retry_preserves_wled_and_revalidates_the_saved_controller() {
+    use pc_control::app::runtime::OpenRgbRetryStatus;
+    use pc_control::runtime::output::Phase;
+    use std::net::UdpSocket;
+
+    let peer = Peer::new(false);
+    let before = document();
+    let inventory = discovery::openrgb_factory(peer.endpoint)(
+        discovery::Target::Device(before.lighting.setup.devices[0].clone()),
+        Cancellation::default(),
+    )
+    .unwrap();
+    let candidate = &inventory.candidates[0];
+    let mut document =
+        device_setup::adopt_openrgb(&before, "rgb", candidate.controller.as_ref().unwrap())
+            .unwrap();
+    let wled = UdpSocket::bind("127.0.0.1:0").unwrap();
+    wled.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+    let setup = &mut document.lighting.setup;
+    setup.devices.push(Device {
+        id: "wled".into(),
+        label: "Loopback WLED".into(),
+        driver: Driver::WledDdp,
+        leds: 1,
+        ..setup.devices[0].clone()
+    });
+    setup.canvas.points.push(Point {
+        device: "wled".into(),
+        led: 0,
+        x: 0,
+        y: 1,
+    });
+    document.lighting.groups.pc.push("wled".into());
+    let bindings: Bindings = [
+        (
+            "rgb".into(),
+            candidate.draft.binding(&setup.devices[0]).unwrap(),
+        ),
+        (
+            "wled".into(),
+            Binding::WledDdp {
+                endpoint: wled.local_addr().unwrap(),
+                controller: None,
+            },
+        ),
+    ]
+    .into();
+    let mut engine = Runtime::new(document.clone(), None).unwrap();
+    for id in ["rgb", "wled"] {
+        let (keys, factory) =
+            native::bound_factory(&document.lighting.setup, id, &bindings, 15).unwrap();
+        engine.attach_rgb(id, keys, factory).unwrap();
+        engine.enable_output_recovery(id).unwrap();
+    }
+    let step = |engine: &mut Runtime, time| engine.tick(time, 1_800_000_000).unwrap();
+    let mut now = 0;
+    wait(|| {
+        now += 50_000;
+        step(&mut engine, now);
+        ["rgb", "wled"]
+            .iter()
+            .all(|id| engine.host().status(id).unwrap().submitted > 0)
+    });
+    let mut datagram = [0; 64];
+    assert_eq!(wled.recv(&mut datagram).unwrap(), 13);
+    let wled_start = engine.host().status("wled").unwrap();
+    let direct = || {
+        peer.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| c.1 == 1101)
+            .count()
+    };
+    assert_eq!(direct(), 1);
+    assert!(engine.openrgb_retry_ticket("rgb").is_none());
+
+    peer.set_paused(true);
+    now += 50_000;
+    wait(|| {
+        step(&mut engine, now);
+        engine.host().status("rgb").unwrap().phase == Phase::Failed
+    });
+    for delay in [1_000_000, 5_000_000, 15_000_000] {
+        step(&mut engine, now);
+        let generation = engine.host().status("rgb").unwrap().generation;
+        now += delay;
+        wait(|| {
+            step(&mut engine, now);
+            let snapshot = engine.host().status("rgb").unwrap();
+            snapshot.generation != generation && snapshot.phase == Phase::Failed
+        });
+    }
+    step(&mut engine, now);
+    peer.set_paused(false);
+    now += 60_000_000;
+    step(&mut engine, now);
+    assert_eq!(direct(), 1);
+    let ticket = engine.openrgb_retry_ticket("rgb").unwrap();
+    assert!(!engine.request_openrgb_retry("wled", ticket));
+    assert!(engine.request_openrgb_retry("rgb", ticket));
+    assert_eq!(
+        engine.openrgb_retry_status("rgb", ticket),
+        OpenRgbRetryStatus::Pending
+    );
+    assert!(!engine.request_openrgb_retry("rgb", ticket));
+    assert!(engine.cancel_openrgb_retry("rgb", ticket));
+    assert_eq!(
+        engine.openrgb_retry_status("rgb", ticket),
+        OpenRgbRetryStatus::Cancelled
+    );
+    step(&mut engine, now);
+    assert!(!engine.request_openrgb_retry("rgb", ticket));
+    let next = engine.openrgb_retry_ticket("rgb").unwrap();
+    assert_eq!(next.generation, ticket.generation);
+    assert_ne!(next, ticket);
+
+    let calls_before_foreign_controller = peer.calls.lock().unwrap().len();
+    peer.change_identity(true);
+    assert!(engine.request_openrgb_retry("rgb", next));
+    wait(|| {
+        step(&mut engine, now);
+        engine
+            .openrgb_retry_ticket("rgb")
+            .is_some_and(|ticket| ticket.generation != next.generation)
+    });
+    assert_eq!(
+        direct(),
+        1,
+        "A different controller must not receive Direct"
+    );
+    {
+        let calls = peer.calls.lock().unwrap();
+        let foreign_attempt = &calls[calls_before_foreign_controller..];
+        assert!(
+            foreign_attempt
+                .iter()
+                .any(|(id, packet, _)| *id == 8 && *packet == 1),
+            "The mismatched controller must actually be read"
+        );
+        assert!(
+            foreign_attempt
+                .iter()
+                .all(|(_, packet, _)| !matches!(packet, 1101 | 1050)),
+            "A different controller must not receive Direct or an RGB frame"
+        );
+    }
+    assert!(
+        matches!(engine.openrgb_retry_status("rgb", next), OpenRgbRetryStatus::Failed(error) if !error.is_empty())
+    );
+    assert_eq!(engine.host().status("rgb").unwrap().submitted, 0);
+    assert!(!engine.request_openrgb_retry("rgb", ticket));
+
+    peer.change_identity(false);
+    let (keys, _) = native::bound_factory(&document.lighting.setup, "rgb", &bindings, 15).unwrap();
+    let mut lease_holder = Runtime::new(document.clone(), None).unwrap();
+    wait(|| {
+        step(&mut engine, now);
+        lease_holder
+            .attach_rgb(
+                "rgb",
+                keys.clone(),
+                std::sync::Arc::new(|cancel| {
+                    while !cancel.cancelled() {
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    Err("fixture lease released".into())
+                }),
+            )
+            .is_ok()
+    });
+    let ticket = engine.openrgb_retry_ticket("rgb").unwrap();
+    let before_busy_retry = peer.calls.lock().unwrap().len();
+    assert!(engine.request_openrgb_retry("rgb", ticket));
+    wait(|| {
+        step(&mut engine, now);
+        !matches!(
+            engine.openrgb_retry_status("rgb", ticket),
+            OpenRgbRetryStatus::Pending
+        )
+    });
+    let result = engine.openrgb_retry_status("rgb", ticket);
+    assert!(
+        matches!(&result, OpenRgbRetryStatus::Failed(error) if error.contains("still owned by another output")),
+        "{result:?}"
+    );
+    assert_eq!(peer.calls.lock().unwrap().len(), before_busy_retry);
+    assert!(!engine.request_openrgb_retry("rgb", ticket));
+    lease_holder.stop();
+    wait(|| lease_holder.drained());
+
+    let stale = engine.openrgb_retry_ticket("rgb").unwrap();
+    assert!(engine.request_openrgb_retry("rgb", stale));
+    let mut scene = document.lighting.scene.clone();
+    scene.colors = vec![0x00ff00];
+    engine.set_scene(scene).unwrap();
+    step(&mut engine, now);
+    assert_eq!(
+        engine.openrgb_retry_status("rgb", stale),
+        OpenRgbRetryStatus::Cancelled
+    );
+    assert_eq!(direct(), 1);
+    let ticket = engine.openrgb_retry_ticket("rgb").unwrap();
+    assert!(engine.request_openrgb_retry("rgb", ticket));
+    wait(|| {
+        now += 50_000;
+        step(&mut engine, now);
+        engine.host().status("rgb").unwrap().submitted > 0
+    });
+    assert_eq!(direct(), 2);
+    assert_eq!(
+        engine.openrgb_retry_status("rgb", ticket),
+        OpenRgbRetryStatus::Submitted
+    );
+    let calls = peer.calls.lock().unwrap();
+    let (_, _, frame) = calls.iter().rev().find(|call| call.1 == 1050).unwrap();
+    assert!(
+        frame[7] > frame[6] && frame[7] > frame[8],
+        "Expected current green scene"
+    );
+    drop(calls);
+    let modes_before = direct();
+    let (keys, factory) =
+        native::bound_factory(&document.lighting.setup, "rgb", &bindings, 15).unwrap();
+    let mut competitor = Runtime::new(document.clone(), None).unwrap();
+    assert!(
+        competitor
+            .attach_rgb("rgb", keys, factory)
+            .unwrap_err()
+            .contains("still owned by another output")
+    );
+    assert_eq!(direct(), modes_before);
+    competitor.stop();
+    let wled_end = engine.host().status("wled").unwrap();
+    assert_eq!(wled_end.generation, wled_start.generation);
+    assert!(wled_end.submitted > wled_start.submitted);
+    assert_eq!(wled.recv(&mut datagram).unwrap(), 13);
+
+    peer.set_paused(true);
+    wait(|| {
+        now += 50_000;
+        step(&mut engine, now);
+        engine.openrgb_retry_ticket("rgb").is_some()
+    });
+    let ticket = engine.openrgb_retry_ticket("rgb").unwrap();
+    assert!(engine.request_openrgb_retry("rgb", ticket));
+    engine.stop();
+    assert!(!engine.cancel_openrgb_retry("rgb", ticket));
+    peer.set_paused(false);
+    wait(|| engine.drained());
+    assert_eq!(direct(), 2);
+}
+
+#[test]
 fn discovery_id_reorder_geometry_and_explicit_apply_reach_the_real_sdk_adapter() {
     let peer = Peer::new(false);
     let before = document();

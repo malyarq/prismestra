@@ -1,18 +1,38 @@
 //! Opt-in bounded recovery for explicitly bound outputs, including initial failures.
 use super::*;
 
+const RETRY_DELAYS_US: [u64; 3] = [1_000_000, 5_000_000, 15_000_000];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OpenRgbRetryTicket {
+    pub document_revision: u64,
+    pub generation: u64,
+    pub attempt: u64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum OpenRgbRetryStatus {
+    Pending,
+    Submitted,
+    Failed(String),
+    Cancelled,
+}
+
 #[derive(Default)]
 pub(super) struct Recovery {
     attempts: usize,
     failed_generation: Option<u64>,
     due_us: Option<u64>,
+    manual_retry: Option<OpenRgbRetryTicket>,
+    manual_attempt: u64,
+    manual_started: Option<(OpenRgbRetryTicket, Option<u64>)>,
     pub(super) start_error: Option<String>,
 }
 impl Recovery {
     fn observe(&mut self, generation: u64, failed: bool, now: u64) -> bool {
         if failed && self.failed_generation != Some(generation) {
             self.failed_generation = Some(generation);
-            self.due_us = [1_000_000, 5_000_000, 15_000_000]
+            self.due_us = RETRY_DELAYS_US
                 .get(self.attempts)
                 .map(|delay| now.saturating_add(*delay));
             return self.due_us.is_some();
@@ -35,6 +55,119 @@ impl Recovery {
 }
 
 impl Runtime {
+    fn output_recovery_paused(&self) -> bool {
+        self.stopped
+            || self.suspended
+            || self.pending.is_some()
+            || self.power.pending()
+            || self.power.error().is_some()
+            || self.refresh.is_some()
+    }
+
+    /// Failed generation eligible for one explicit retry of a saved external OpenRGB output.
+    /// The returned ticket is tied to the current runtime and must be echoed by the caller.
+    pub fn openrgb_retry_ticket(&self, id: &str) -> Option<OpenRgbRetryTicket> {
+        use crate::{devices::Driver, runtime::output::Phase};
+
+        if self.output_recovery_paused()
+            || !self
+                .document
+                .lighting
+                .setup
+                .devices
+                .iter()
+                .any(|device| device.id == id && device.enabled && device.driver == Driver::OpenRgb)
+        {
+            return None;
+        }
+        #[cfg(windows)]
+        if self.managed_backend_ids.contains(id) {
+            return None;
+        }
+        let spec = self.rgb_specs.get(id)?;
+        if spec.action_required_error.is_some() {
+            return None;
+        }
+        let recovery = self.output_recovery.get(id)?;
+        let snapshot = self.host.status(id)?;
+        (recovery.attempts == RETRY_DELAYS_US.len()
+            && recovery.due_us.is_none()
+            && recovery.manual_retry.is_none()
+            && recovery.manual_attempt < u64::MAX
+            && snapshot.phase == Phase::Failed
+            && !snapshot.requires_action)
+            .then_some(OpenRgbRetryTicket {
+                document_revision: self.document_revision,
+                generation: snapshot.generation,
+                attempt: recovery.manual_attempt,
+            })
+    }
+
+    /// Queue one attempt without renewing automatic recovery. False means the
+    /// ticket is stale, already queued, or the output is no longer eligible.
+    pub fn request_openrgb_retry(&mut self, id: &str, ticket: OpenRgbRetryTicket) -> bool {
+        if self.openrgb_retry_ticket(id) != Some(ticket) {
+            return false;
+        }
+        let recovery = self.output_recovery.get_mut(id).unwrap();
+        recovery.manual_attempt += 1;
+        recovery.manual_retry = Some(ticket);
+        recovery.manual_started = None;
+        self.bump_view();
+        true
+    }
+
+    /// Cancel queued work. Once dispatched, normal output lifecycle owns cancellation.
+    pub fn cancel_openrgb_retry(&mut self, id: &str, ticket: OpenRgbRetryTicket) -> bool {
+        let Some(recovery) = self.output_recovery.get_mut(id) else {
+            return false;
+        };
+        if recovery.manual_retry != Some(ticket) {
+            return false;
+        }
+        recovery.manual_retry = None;
+        self.bump_view();
+        true
+    }
+
+    pub fn openrgb_retry_status(&self, id: &str, ticket: OpenRgbRetryTicket) -> OpenRgbRetryStatus {
+        use crate::runtime::output::Phase;
+        use OpenRgbRetryStatus::*;
+
+        if self.output_recovery_paused() || ticket.document_revision != self.document_revision {
+            return Cancelled;
+        }
+        let Some(recovery) = self.output_recovery.get(id) else {
+            return Cancelled;
+        };
+        if recovery.manual_retry == Some(ticket) {
+            return Pending;
+        }
+        match recovery.manual_started {
+            Some((started, None)) if started == ticket => recovery
+                .start_error
+                .as_ref()
+                .map_or(Cancelled, |error| Failed(error.clone())),
+            Some((started, Some(generation))) if started == ticket => {
+                let Some(snapshot) = self.host.status(id).filter(|s| s.generation == generation)
+                else {
+                    return Cancelled;
+                };
+                match snapshot.phase {
+                    Phase::Failed => Failed(
+                        snapshot
+                            .error
+                            .unwrap_or_else(|| "OpenRGB недоступен".into()),
+                    ),
+                    Phase::Ready if snapshot.submitted != 0 => Submitted,
+                    Phase::Connecting | Phase::Ready => Pending,
+                    _ => Cancelled,
+                }
+            }
+            _ => Cancelled,
+        }
+    }
+
     /// Exact endpoint keys from the committed LCD plan, never a similar device.
     #[cfg(windows)]
     pub(super) fn lcd_interface_targets(&self) -> Vec<String> {
@@ -146,6 +279,11 @@ impl Runtime {
     }
 
     pub(super) fn recover_failed_outputs(&mut self, now: u64) -> Result<(), String> {
+        if self.output_recovery_paused() {
+            for state in self.output_recovery.values_mut() {
+                state.manual_retry = None;
+            }
+        }
         let live = self
             .pending
             .as_ref()
@@ -173,6 +311,7 @@ impl Runtime {
                 if spec.action_required_error.is_some()
                     || snapshot.as_ref().is_some_and(|s| s.requires_action)
                 {
+                    state.manual_retry = None;
                     continue;
                 }
                 let failed = state.start_error.is_some()
@@ -181,10 +320,24 @@ impl Runtime {
                         .is_some_and(|s| s.phase == crate::runtime::output::Phase::Failed);
                 scheduled_retry |=
                     state.observe(snapshot.as_ref().map_or(0, |s| s.generation), failed, now);
-                if failed
-                    && state.take_attempt(now, snapshot.is_none() || self.host.output_reaped(id))
-                {
-                    rgb.push((id.clone(), spec.keys.clone(), spec.factory.clone()));
+                if state.manual_retry.is_some_and(|ticket| {
+                    !failed
+                        || ticket.document_revision != self.document_revision
+                        || snapshot.as_ref().map(|s| s.generation) != Some(ticket.generation)
+                }) {
+                    state.manual_retry = None;
+                }
+                if !failed {
+                    continue;
+                }
+                let reaped = snapshot.is_none() || self.host.output_reaped(id);
+                if (reaped && state.manual_retry.is_some()) || state.take_attempt(now, reaped) {
+                    rgb.push((
+                        id.clone(),
+                        spec.keys.clone(),
+                        spec.factory.clone(),
+                        state.manual_retry.take(),
+                    ));
                 }
             } else if let Some(spec) = self.lcd_specs.get(id) {
                 let worker = self.lcd.get(id);
@@ -213,8 +366,16 @@ impl Runtime {
         if scheduled_retry {
             self.bump_view();
         }
-        for (id, keys, factory) in rgb {
+        for (id, keys, factory, manual) in rgb {
             let result = self.host.attach_claimed(&id, keys, move |c| factory(c));
+            if let Some(ticket) = manual {
+                let generation = result
+                    .as_ref()
+                    .ok()
+                    .and_then(|_| self.host.status(&id).map(|s| s.generation));
+                self.output_recovery.get_mut(&id).unwrap().manual_started =
+                    Some((ticket, generation));
+            }
             self.handle_output_start(&id, result)?;
             self.bump_view();
         }

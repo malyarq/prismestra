@@ -16,6 +16,8 @@ pub struct Peer {
     pub calls: Calls,
     stop: Arc<AtomicBool>,
     socket: Arc<Mutex<Option<TcpStream>>>,
+    paused: Arc<AtomicBool>,
+    changed_identity: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
 }
 fn word(out: &mut Vec<u8>, n: u16) {
@@ -81,6 +83,19 @@ fn packet(stream: &mut TcpStream, device: u32, kind: u32, body: &[u8]) -> std::i
     stream.write_all(&bytes)
 }
 impl Peer {
+    #[allow(dead_code)]
+    pub fn set_paused(&self, paused: bool) {
+        self.paused.store(paused, Ordering::Release);
+        if paused && let Some(socket) = self.socket.lock().unwrap().as_ref() {
+            let _ = socket.shutdown(Shutdown::Both);
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn change_identity(&self, changed: bool) {
+        self.changed_identity.store(changed, Ordering::Release);
+    }
+
     pub fn new(duplicate: bool) -> Self {
         Self::start(duplicate, false, false, None, 0)
     }
@@ -109,8 +124,11 @@ impl Peer {
         let endpoint = listener.local_addr().unwrap();
         let stop = Arc::new(AtomicBool::new(false));
         let socket = Arc::new(Mutex::new(None));
+        let paused = Arc::new(AtomicBool::new(false));
+        let changed_identity = Arc::new(AtomicBool::new(false));
         let calls: Calls = Arc::new(Mutex::new(vec![]));
         let (done, current, saved) = (stop.clone(), socket.clone(), calls.clone());
+        let (reject, changed) = (paused.clone(), changed_identity.clone());
         let thread = thread::spawn(move || {
             let mut connections = 0;
             while !done.load(Ordering::Acquire) {
@@ -128,7 +146,13 @@ impl Peer {
                 stream
                     .set_read_timeout(Some(Duration::from_secs(3)))
                     .unwrap();
-                *current.lock().unwrap() = Some(stream.try_clone().unwrap());
+                {
+                    let mut current = current.lock().unwrap();
+                    if reject.load(Ordering::Acquire) {
+                        continue;
+                    }
+                    *current = Some(stream.try_clone().unwrap());
+                }
                 loop {
                     let mut header = [0; 16];
                     if stream.read_exact(&mut header).is_err() {
@@ -140,7 +164,9 @@ impl Peer {
                     let size = u32::from_le_bytes(header[12..16].try_into().unwrap()) as usize;
                     assert!(size <= 1024 * 1024);
                     let mut body = vec![0; size];
-                    stream.read_exact(&mut body).unwrap();
+                    if stream.read_exact(&mut body).is_err() {
+                        break;
+                    }
                     saved.lock().unwrap().push((device, kind, body));
                     let result = match kind {
                         40 => packet(&mut stream, device, kind, &6u32.to_le_bytes()),
@@ -178,7 +204,11 @@ impl Peer {
                                 } else {
                                     "Zone"
                                 },
-                                "FAKE-SERIAL",
+                                if changed.load(Ordering::Acquire) {
+                                    "DIFFERENT-SERIAL"
+                                } else {
+                                    "FAKE-SERIAL"
+                                },
                                 2,
                             ),
                         ),
@@ -203,6 +233,8 @@ impl Peer {
             calls,
             stop,
             socket,
+            paused,
+            changed_identity,
             thread: Some(thread),
         }
     }
