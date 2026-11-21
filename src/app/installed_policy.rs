@@ -709,6 +709,10 @@ fn process_token(process: HANDLE, access: u32) -> Result<Handle, String> {
     Ok(Handle(token))
 }
 
+pub(super) fn process_user_sid(process: HANDLE) -> Result<String, String> {
+    token_sid(&process_token(process, TOKEN_QUERY)?)
+}
+
 fn token_data(token: &Handle, class: TOKEN_INFORMATION_CLASS) -> Result<Vec<usize>, String> {
     let mut length = 0;
     if unsafe { GetTokenInformation(token.0, class, null_mut(), 0, &mut length) } == 0 {

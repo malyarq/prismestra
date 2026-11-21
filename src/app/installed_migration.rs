@@ -20,11 +20,9 @@ use std::{
     fs::File,
     io::{self, Read},
     net::SocketAddr,
-    os::windows::{ffi::OsStringExt, process::CommandExt},
+    os::windows::ffi::OsStringExt,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
     ptr::null_mut,
-    thread,
     time::{Duration, Instant},
 };
 use windows_sys::{
@@ -35,9 +33,8 @@ use windows_sys::{
         },
         System::{
             Com::CoTaskMemFree,
-            SystemInformation::GetSystemDirectoryW,
             Threading::{
-                CREATE_NO_WINDOW, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+                GetCurrentProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
                 PROCESS_SYNCHRONIZE, QueryFullProcessImageNameW, WaitForSingleObject,
             },
         },
@@ -1059,13 +1056,15 @@ unsafe fn os_string(raw: *const u16) -> OsString {
     OsString::from_wide(unsafe { std::slice::from_raw_parts(raw, size) })
 }
 
-#[derive(Deserialize)]
 struct RunningEntry {
     image: PathBuf,
     command: String,
     pid: u32,
     creation: u64,
 }
+
+#[path = "installed_process_inventory.rs"]
+mod process_inventory;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct LegacyProcess {
@@ -1103,76 +1102,18 @@ fn running_sources() -> Result<BTreeSet<Source>, String> {
 }
 
 fn running_candidates() -> Result<BTreeMap<Source, Vec<LegacyProcess>>, String> {
-    let script = r#"
-$ErrorActionPreference='Stop'
-$env:PSModulePath=Join-Path $PSHOME 'Modules'
-[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
-$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$entries=foreach($p in (Get-CimInstance Win32_Process -Filter "Name='Prismestra.exe' OR Name='pc-control-ui.exe'" | Select-Object -First 24)) {
-  if($p.ExecutablePath -and $p.CommandLine -and $p.CommandLine.Contains('--project') -and $p.CommandLine.Contains('--state-dir')) {
-    $owner=Invoke-CimMethod -InputObject $p -MethodName GetOwnerSid -ErrorAction SilentlyContinue
-    if($owner -and $owner.ReturnValue -eq 0 -and $owner.Sid -ceq $sid -and $p.CreationDate) {
-      @{image=$p.ExecutablePath;command=$p.CommandLine;pid=$p.ProcessId;creation=$p.CreationDate.ToFileTimeUtc()}
-    }
-  }
+    verified_running_entries(process_inventory::query()?)
 }
-ConvertTo-Json -InputObject @($entries | Where-Object { $_ }) -Compress
-"#;
-    let mut system = [0u16; 32_768];
-    let size = unsafe { GetSystemDirectoryW(system.as_mut_ptr(), system.len() as u32) } as usize;
-    if size == 0 || size >= system.len() {
-        return Err("Windows system directory unavailable".into());
-    }
-    let exe = PathBuf::from(OsString::from_wide(&system[..size]))
-        .join("WindowsPowerShell/v1.0/powershell.exe");
-    let mut child = Command::new(exe)
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .creation_flags(CREATE_NO_WINDOW)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(err)?;
-    let Some(stdout) = child.stdout.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err("Cannot read Prismestra process inventory".into());
-    };
-    let reader = thread::spawn(move || {
-        let mut bytes = vec![];
-        stdout
-            .take(MAX_DISCOVERY as u64 + 1)
-            .read_to_end(&mut bytes)?;
-        Ok::<_, io::Error>(bytes)
-    });
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Ok(status),
-            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(25)),
-            result => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break Err(match result {
-                    Err(error) => err(error),
-                    _ => "Prismestra process inventory timed out".into(),
-                });
-            }
-        }
-    };
-    let bytes = reader
-        .join()
-        .map_err(|_| "Prismestra inventory reader failed".to_owned())?
-        .map_err(err)?;
-    if !status?.success() || bytes.len() > MAX_DISCOVERY {
-        return Err("Prismestra process inventory unavailable".into());
-    }
-    let entries: Vec<RunningEntry> = serde_json::from_slice(&bytes).map_err(err)?;
+
+fn verified_running_entries(
+    entries: Vec<RunningEntry>,
+) -> Result<BTreeMap<Source, Vec<LegacyProcess>>, String> {
+    let owner = super::installed_policy::process_user_sid(unsafe { GetCurrentProcess() })?;
     let mut result = BTreeMap::<Source, Vec<LegacyProcess>>::new();
     for entry in entries {
         if let Some((profile, state)) = legacy_args(&entry.command)
+            && let Some(process) = verified_legacy_process(&entry, &owner)
             && let Ok(source) = Source::checked(&profile, &state)
-            && let Some(process) = verified_legacy_process(&entry)
         {
             result.entry(source).or_default().push(process);
         }
@@ -1180,8 +1121,7 @@ ConvertTo-Json -InputObject @($entries | Where-Object { $_ }) -Compress
     Ok(result)
 }
 
-fn verified_legacy_process(entry: &RunningEntry) -> Option<LegacyProcess> {
-    let expected = checked_local_path(&entry.image).ok()?;
+fn verified_legacy_process(entry: &RunningEntry, owner: &str) -> Option<LegacyProcess> {
     let handle = unsafe {
         OpenProcess(
             PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
@@ -1193,6 +1133,10 @@ fn verified_legacy_process(entry: &RunningEntry) -> Option<LegacyProcess> {
         return None;
     }
     let result = (|| {
+        if super::installed_policy::process_user_sid(handle).ok()? != owner {
+            return None;
+        }
+        let expected = checked_local_path(&entry.image).ok()?;
         let mut wide = vec![0; 32_768];
         let mut size = wide.len() as u32;
         if unsafe { QueryFullProcessImageNameW(handle, 0, wide.as_mut_ptr(), &mut size) } == 0 {
@@ -1284,8 +1228,111 @@ mod tests {
     };
     use std::{
         fs,
+        io::Read,
+        os::windows::process::CommandExt,
+        process::{Command, Stdio},
+        thread,
         time::{SystemTime, UNIX_EPOCH},
     };
+    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+
+    #[test]
+    #[ignore = "fixture process; launched only by the live migration inventory test"]
+    fn legacy_inventory_child() {
+        let ready = std::env::var_os("PRISMESTRA_MIGRATION_FIXTURE_READY").unwrap();
+        fs::write(ready, b"ready").unwrap();
+        let mut byte = [0];
+        let _ = io::stdin().read(&mut byte);
+    }
+
+    struct InventoryChild(std::process::Child);
+
+    impl Drop for InventoryChild {
+        fn drop(&mut self) {
+            if matches!(self.0.try_wait(), Ok(None)) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+    }
+
+    #[test]
+    fn native_inventory_verifies_live_legacy_source_and_ignores_exited_process() {
+        let fixture = Fixture::with_legacy_folder("Старый профиль");
+        fixture.populate(&document(true), "127.0.0.1:19424".parse().unwrap());
+        let source_root = fixture.source.profile.parent().unwrap();
+        let image = source_root.join("Prismestra.exe");
+        fs::copy(std::env::current_exe().unwrap(), &image).unwrap();
+        fs::write(
+            source_root.join("release-manifest.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "product": "Prismestra",
+                "executable_sha256": fingerprint(&fs::read(&image).unwrap()),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let ready = source_root.join("ready");
+        let mut child = InventoryChild(
+            Command::new(&image)
+                .args([
+                    "--exact",
+                    "app::installed_migration::tests::legacy_inventory_child",
+                    "--ignored",
+                    "--",
+                    "--project",
+                ])
+                .arg(&fixture.source.profile)
+                .arg("--state-dir")
+                .arg(&fixture.source.state)
+                .env("PRISMESTRA_MIGRATION_FIXTURE_READY", &ready)
+                .creation_flags(CREATE_NO_WINDOW)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while !ready.exists() {
+            assert!(child.0.try_wait().unwrap().is_none(), "fixture exited");
+            assert!(Instant::now() < deadline, "fixture did not start");
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let entries = process_inventory::query().unwrap();
+        let entry = entries
+            .iter()
+            .find(|entry| entry.pid == child.0.id())
+            .unwrap();
+        let owner =
+            super::super::installed_policy::process_user_sid(unsafe { GetCurrentProcess() })
+                .unwrap();
+        assert!(verified_legacy_process(entry, "S-1-0-0").is_none());
+        let stale = RunningEntry {
+            image: entry.image.clone(),
+            command: entry.command.clone(),
+            pid: entry.pid,
+            creation: entry.creation - 20_000,
+        };
+        assert!(verified_legacy_process(&stale, &owner).is_none());
+        let mut candidates = verified_running_entries(entries).unwrap();
+        let expected = candidates.remove(&fixture.source).unwrap();
+        assert_eq!(expected.len(), 1);
+        assert_eq!(expected[0].pid, child.0.id());
+        assert_eq!(expected[0].executable, image);
+
+        fixture.migrate(true).unwrap();
+        assert_eq!(
+            active_process_for_migration(&fixture.target)
+                .unwrap()
+                .as_ref(),
+            Some(&expected[0]),
+        );
+        drop(child.0.stdin.take());
+        assert!(child.0.wait().unwrap().success());
+        assert_eq!(active_process_for_migration(&fixture.target).unwrap(), None);
+    }
 
     struct Fixture {
         root: PathBuf,
