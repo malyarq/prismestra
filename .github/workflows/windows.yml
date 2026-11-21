@@ -42,6 +42,8 @@ jobs:
         run: powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/installer/test_legacy_startup.ps1
       - name: Check portable launchers without hardware
         run: python scripts/test_portable_launcher.py
+      - name: Check shell acceptance evidence
+        run: python scripts/test_shell_acceptance.py
       - name: Check local backend configuration without hardware
         run: python scripts/test_backend_setup.py
       - name: Check helper clock contract without hardware
