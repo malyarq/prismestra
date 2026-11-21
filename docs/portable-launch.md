@@ -1,21 +1,21 @@
 # Portable launch
 
-Extract the complete Windows ZIP into a folder you can write to. The launchers use the extracted folder, regardless of the current working directory. They do not install anything, request administrator rights or register Windows startup tasks. The native session can start an explicitly configured [managed OpenRGB backend](managed-openrgb.md).
+Extract the complete Windows ZIP into a folder you can write to. Prismestra locates portable data beside the executable, independent of the current working directory. Portable startup uses your existing Windows account. The native session can start an explicitly configured [managed OpenRGB backend](managed-openrgb.md).
 
 ## First setup
 
-1. Run `Open Prismestra.cmd`. This opens a software preview, without activating saved hardware outputs.
+1. Open `Prismestra.exe` from the extracted folder. With the adjacent release manifest, this opens a software preview without activating saved hardware outputs.
 2. Create your device layout or open an exported profile using the editor. Inspect the Connections page and configure the supported devices on this PC. Saving connection settings and applying them are separate actions. See [connection behavior](https://github.com/malyarq/prismestra/blob/codex/native-design/docs/universal-connections.md).
 3. Save your profile as `data/profile.json` inside the extracted folder. The launcher does not guess which of your scenes to use and does not automatically save unsaved profile edits. Use **Export Profile** to move a profile with its LCD media to another PC. Opening the ZIP imports those files into the local asset store. Save the imported profile at `data/profile.json` afterward.
-4. Exit the resident session from the tray before changing launch modes. Run `Start saved scene.cmd` to open the saved profile and activate its saved connections, including configured temperature routes. Later launches use the same saved profile and state directory.
+4. To activate the saved connections, create a Windows shortcut. Set its target to `"C:\path\to\Prismestra.exe" --portable --start-connected`. Exit the existing session from the tray before switching modes. Start the new shortcut to restore the saved scene and its local connections, including configured temperature routes.
 
-`Open Prismestra.cmd` loads `data/profile.json` when it exists; otherwise it opens the default preview. It never adds `--start-connected`. `Start saved scene.cmd` requires both that profile and `data/state/lighting-local.json`. A missing file stops launch with an instruction rather than selecting another device. Rust still validates the profile, bindings, device identities and capabilities at runtime. Passing launcher checks does not prove that a device is connected or compatible.
+Preview opens `data/profile.json` when it exists and the default scene otherwise. Connected mode requires both the profile and `data/state/lighting-local.json`. Missing inputs show a startup error. The application validates the profile, saved connections and device capabilities at runtime.
 
-Closing the editor leaves the resident engine in the tray. Exit from its menu to stop the session. A repeated launch using the same state directory is handled by the application's single-instance guard; it does not switch a running preview into connected mode. Save changes and exit before restarting in the other mode.
+Closing the editor leaves the resident engine in the tray. Exit from its menu to stop the session. Repeating the direct launch for the same portable folder opens the editor in the existing session. To switch modes, save changes and exit before starting the other shortcut.
 
 If Windows temporarily refuses the tray icon, the engine continues and registration retries with backoff. Until the icon is registered, closing the editor keeps the window accessible instead of hiding the only entry point. Explorer/taskbar recreation triggers a new registration attempt; restarting Explorer or another application is not an automatic recovery action.
 
-The launcher waits up to 15 seconds for an atomic, process-bound native-core acknowledgement. An explicit initialization failure is reported even if its error dialog keeps the process alive. A timeout leaves the spawned process running and tells you to inspect it before retrying. Core startup acknowledgement does not certify hardware/output readiness; check device statuses in the application. `-Check` remains a nonmutating preflight and does not start or acknowledge a session.
+Native startup errors appear in a dialog. After dismissing the dialog, the process exits with a nonzero status. Device readiness is reported separately in the application.
 
 ## What moves with the folder
 
@@ -31,11 +31,11 @@ The release ZIP contains no personal profile or state. Your populated folder con
 
 For devices using the OpenRGB adapter, configure [managed local OpenRGB](managed-openrgb.md) or run a compatible external OpenRGB SDK6 server and set its endpoint in Connections. Direct BLE, Skydimo, LCD, WLED and Home Assistant paths do not become OpenRGB devices through this launcher. Another application's ownership can prevent activation. Keep your fan and pump software running; Prismestra does not control cooling.
 
-The package retains the existing Windows x64, Visual C++ v14 and WebView2 requirements described in `START-HERE.md`. To use the classic editor, run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\Launch Prismestra.ps1" -ClassicEditor` from the extracted folder; add `-Connected` only to activate the saved scene. The launchers do not install missing runtimes or change machine policy.
+The package retains the Windows x64, Visual C++ v14 and WebView2 requirements described in `START-HERE.md`. To use the classic editor, add `--portable --classic-editor` to the Windows shortcut target. Add `--start-connected` there when you want to activate the saved connections.
 
-Running `Prismestra.exe` directly uses the existing per-user default state directory instead of `data/state`. Do not launch another state directory against devices already owned by a running session. Keep the application and its data together when updating; exit the session first, back up your data, and replace program files without overwriting `data`.
+Keep the application and its data together when updating. Exit the session first, back up your data, and replace program files while preserving `data`.
 
-## Check a launch without activating anything
+## Compatibility with the previous launchers
 
 From the extracted folder:
 
@@ -44,6 +44,6 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\Launch Prismestra.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\Launch Prismestra.ps1" -Connected -Check
 ```
 
-These commands report the planned executable and arguments without starting Prismestra or contacting devices. They do not test state-directory writability or validate remote endpoints, credentials, controller firmware or physical output. Normal launch probes state write access. Launcher failures return a nonzero exit code and the `.cmd` window stays open so its message can be read. The launcher observes immediate process exit for 1.5 seconds, then exits while Prismestra continues; it is not a background watchdog. Later application errors are reported by Prismestra.
+The previous launchers remain available while existing tasks are verified. Their `-Check` option reports planned executable and arguments without starting Prismestra or contacting devices. The previous launcher waits up to 15 seconds for native-core startup acknowledgement. Direct portable launch uses the GUI process itself as the entry point.
 
-Source: [launcher](../scripts/portable/Launch%20Prismestra.ps1), [startup and validation](../src/ui/windows.rs), [portable profile handling](../src/app/bundle.rs). Launcher and packaging checks run without physical devices in [Windows CI](../.github/workflows/windows.yml).
+[Native entry point](../src/ui/windows/portable.rs) · [Startup and validation](../src/ui/windows.rs) · [Previous launcher](../scripts/portable/Launch%20Prismestra.ps1) · [Windows CI](../.github/workflows/windows.yml)

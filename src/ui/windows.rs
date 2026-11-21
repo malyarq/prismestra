@@ -41,6 +41,7 @@ mod connections;
 mod first_run;
 mod modern;
 mod native_forms;
+mod portable;
 mod resident;
 pub(crate) use resident::{Instance, shutdown_installed};
 mod runtime_client;
@@ -2942,6 +2943,11 @@ fn native_sources_allowed(snapshot: bool, selftest: bool) -> bool {
     !snapshot && !selftest
 }
 fn run_inner(args: Vec<OsString>, installed: Option<(Instance, PathBuf)>) -> Result<(), String> {
+    let (args, portable_exe) = if installed.is_none() {
+        portable::resolve(args)?
+    } else {
+        (args, None)
+    };
     let mut o = options(args)?;
     let state_dir = if let Some(path) = &o.state_dir {
         path.clone()
@@ -2974,7 +2980,24 @@ fn run_inner(args: Vec<OsString>, installed: Option<(Instance, PathBuf)>) -> Res
         o.snapshot = Some(state_dir.join("diagnostics/selftest.png"));
     }
     let resident_mode = o.snapshot.is_none() && !o.selftest;
-    let _portable_instance = if resident_mode && installed.is_none() {
+    let portable_instance = if let Some(exe) = portable_exe {
+        let state = state_dir
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        let Some(instance) = resident::Instance::start_installed(
+            &state,
+            &exe,
+            crate::app::installed::Session::Interactive,
+        )?
+        else {
+            startup_ack::ready();
+            return Ok(());
+        };
+        Some(instance)
+    } else {
+        None
+    };
+    let _legacy_instance = if resident_mode && installed.is_none() && portable_instance.is_none() {
         Some(resident::Instance::acquire(&state_dir)?)
     } else {
         None
@@ -3380,7 +3403,10 @@ fn run_inner(args: Vec<OsString>, installed: Option<(Instance, PathBuf)>) -> Res
     if !o.selftest {
         startup_ack::ready();
     }
-    if let Some((instance, _)) = &installed
+    if let Some(instance) = installed
+        .as_ref()
+        .map(|(instance, _)| instance)
+        .or(portable_instance.as_ref())
         && let Err(error) = instance.enable_activation(&state)
     {
         eprintln!("{error}");

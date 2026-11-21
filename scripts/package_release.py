@@ -196,12 +196,11 @@ def main():
         (folder / "release-manifest.json").write_text(
             json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     (binary / "START-HERE.md").write_text(
-        "# Prismestra\n\nRun `Open Prismestra.cmd` for a portable preview. "
+        "# Prismestra\n\nOpen `Prismestra.exe` for a portable preview. "
         "Save your profile as `data/profile.json` inside the extracted folder. "
-        "After configuring local connections, `Start saved scene.cmd` starts that saved scene "
-        "with its saved hardware outputs. See PORTABLE-LAUNCH.md for setup and limitations.\n\n"
-        "Running `Prismestra.exe` directly keeps its existing per-user settings behavior. "
-        "Do not mix it with the portable launchers while another session owns your devices.\n\n"
+        "After configuring local connections, create a Windows shortcut to the same executable "
+        "with arguments `--portable --start-connected` to activate those saved outputs. "
+        "See PORTABLE-LAUNCH.md for setup and limitations.\n\n"
         "Windows x64 builds require the x64 Visual C++ v14 runtime. "
         "Microsoft's supported runtime downloads: "
         "https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist"
@@ -209,7 +208,7 @@ def main():
         "The editor uses Microsoft Edge WebView2 Runtime 105 or newer. "
         "It is not bundled; installation information: "
         "https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution\n\n"
-        "Use `Prismestra.exe --classic-editor` for the legacy native editor if needed.\n\n"
+        "Use `--portable --classic-editor` in the shortcut target for the classic editor.\n\n"
         "Closing the editor leaves the session in the tray. "
         "Use its menu to reopen the editor, stop outputs or exit. "
         "A second launch with the same settings directory shows a tray hint.\n\n"
